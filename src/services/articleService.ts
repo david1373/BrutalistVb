@@ -2,6 +2,7 @@ import { supabase } from '../lib/supabase';
 import type { Database } from '../lib/database.types';
 
 type Article = Database['public']['Tables']['articles']['Insert'];
+type ArticleUpdate = Database['public']['Tables']['articles']['Update'];
 
 export class ArticleService {
   async createArticle(article: Article) {
@@ -20,7 +21,7 @@ export class ArticleService {
     }
   }
 
-  async updateArticle(id: string, updates: Partial<Article>) {
+  async updateArticle(id: string, updates: ArticleUpdate) {
     try {
       const { data, error } = await supabase
         .from('articles')
@@ -37,67 +38,51 @@ export class ArticleService {
     }
   }
 
-  async getArticle(id: string) {
+  async getUnprocessedArticles() {
     try {
       const { data, error } = await supabase
         .from('articles')
         .select('*')
-        .eq('id', id)
-        .single();
+        .eq('is_processed', false)
+        .order('created_at', { ascending: true });
 
       if (error) throw error;
       return data;
     } catch (error) {
-      console.error('Error getting article:', error);
+      console.error('Error getting unprocessed articles:', error);
       throw error;
     }
   }
 
-  async deleteArticle(id: string) {
+  async getArticleByUrl(url: string) {
+    try {
+      const { data, error } = await supabase
+        .from('articles')
+        .select('*')
+        .eq('url', url)
+        .single();
+
+      if (error && error.code !== 'PGRST116') throw error; // PGRST116 is 'not found'
+      return data;
+    } catch (error) {
+      console.error('Error getting article by URL:', error);
+      throw error;
+    }
+  }
+
+  async markAsProcessed(id: string, rewrittenContent: string) {
     try {
       const { error } = await supabase
         .from('articles')
-        .delete()
+        .update({
+          is_processed: true,
+          rewritten_content: rewrittenContent
+        })
         .eq('id', id);
 
       if (error) throw error;
     } catch (error) {
-      console.error('Error deleting article:', error);
-      throw error;
-    }
-  }
-
-  async listArticles({
-    page = 1,
-    limit = 10,
-    status = 'published'
-  }: {
-    page?: number;
-    limit?: number;
-    status?: 'draft' | 'published' | 'archived';
-  } = {}) {
-    try {
-      const from = (page - 1) * limit;
-      const to = from + limit - 1;
-
-      const { data, error, count } = await supabase
-        .from('articles')
-        .select('*', { count: 'exact' })
-        .eq('status', status)
-        .order('created_at', { ascending: false })
-        .range(from, to);
-
-      if (error) throw error;
-
-      return {
-        articles: data,
-        total: count,
-        page,
-        limit,
-        totalPages: count ? Math.ceil(count / limit) : 0
-      };
-    } catch (error) {
-      console.error('Error listing articles:', error);
+      console.error('Error marking article as processed:', error);
       throw error;
     }
   }

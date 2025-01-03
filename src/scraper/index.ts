@@ -1,5 +1,4 @@
 import { BrowserContext, Page } from 'playwright';
-import pLimit from 'p-limit';
 import { createBrowserContext } from './browser';
 import { ImageProcessor } from './imageProcessor';
 import { SCRAPER_CONFIG } from './config';
@@ -7,40 +6,49 @@ import { SCRAPER_CONFIG } from './config';
 export class Scraper {
   private context: BrowserContext;
   private imageProcessor: ImageProcessor;
-  private limit: ReturnType<typeof pLimit>;
-
-  constructor() {
-    this.imageProcessor = new ImageProcessor();
-    this.limit = pLimit(SCRAPER_CONFIG.maxConcurrentPages);
-  }
 
   async init() {
     this.context = await createBrowserContext();
+    this.imageProcessor = new ImageProcessor();
   }
 
-  async scrapeArticle(url: string, retryCount = 0): Promise<any> {
+  async scrapeArticle(url: string, retryCount = 0): Promise<{
+    title: string;
+    content: string;
+    imageUrls: string[];
+  }> {
     try {
       const page = await this.context.newPage();
       await page.goto(url, { waitUntil: 'networkidle' });
 
-      // Take full-page screenshot
-      const screenshot = await page.screenshot({ fullPage: true });
+      // Extract content
+      const data = await page.evaluate(() => {
+        const title = document.querySelector('h1')?.textContent?.trim() || '';
+        const content = document.querySelector('.entry-content')?.textContent?.trim() || '';
+        
+        // Get main article image
+        const mainImage = document.querySelector('.entry-content img');
+        const imageUrl = mainImage?.getAttribute('src') || '';
+
+        return { title, content, imageUrl };
+      });
+
+      // Take screenshot of the article content
+      const contentArea = await page.locator('.entry-content').first();
+      const screenshot = await contentArea.screenshot();
 
       // Process and upload screenshot
-      const imageUrls = await this.imageProcessor.processAndUpload(
-        screenshot,
-        url.split('/').pop() || 'default'
-      );
-
-      // Extract article content
-      const article = await page.evaluate(() => ({
-        title: document.querySelector('h1')?.textContent,
-        content: document.querySelector('article')?.textContent,
-        // Add more selectors as needed
-      }));
+      const processedImages = screenshot ? 
+        await this.imageProcessor.processAndUpload(screenshot, url.split('/').pop() || 'default') :
+        [];
 
       await page.close();
-      return { ...article, imageUrls };
+
+      return {
+        title: data.title,
+        content: data.content,
+        imageUrls: data.imageUrl ? [data.imageUrl, ...processedImages] : processedImages
+      };
 
     } catch (error) {
       if (retryCount < SCRAPER_CONFIG.retryAttempts) {
@@ -51,14 +59,6 @@ export class Scraper {
       }
       throw error;
     }
-  }
-
-  async scrapeMultipleArticles(urls: string[]) {
-    const tasks = urls.map(url =>
-      this.limit(() => this.scrapeArticle(url))
-    );
-
-    return Promise.all(tasks);
   }
 
   async cleanup() {

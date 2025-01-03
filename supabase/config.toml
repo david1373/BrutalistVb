@@ -1,25 +1,26 @@
-# Project configuration
-project_id = "jwntoilvlpcfuctreldl"
-
 [api]
-  # Port to use for the API URL.
-  port = 54321
-  schemes = ["https"]
-  extras = {}
+port = 54321
+schemes = ["http", "https"]
 
-# Database configuration
 [db]
-  port = 5432
-  major_version = 15
+port = 54322
 
 [studio]
-  port = 54323
+port = 54323
 
-# Email testing configuration
 [inbucket]
-  port = 54324
-  smtp_port = 54325
-  pop3_port = 54326
+port = 54324
+smtp_port = 54325
+pop3_port = 54326
+
+[auth]
+site_url = "http://localhost:3000"
+additional_redirect_urls = ["https://localhost:3000"]
+autoconfirm = false
+
+[analytics]
+port = 54327
+vector_port = 54328
 
 [storage]
-  file_size_limit = "50MiB"
+file_size_limit = "50MiB"

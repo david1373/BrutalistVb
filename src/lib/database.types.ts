@@ -12,44 +12,76 @@ export interface Database {
       articles: {
         Row: {
           id: string
-          created_at: string
+          source_id: string
           title: string
-          content: string
-          images: string[]
-          metadata: Json
-          status: 'draft' | 'published' | 'archived'
-          updated_at: string
+          rewritten_content: string | null
+          url: string
+          image_url: string | null
+          author: string | null
+          published_at: string | null
+          created_at: string
+          is_subscriber_only: boolean
+          category: string | null
+          original_content: string
+          is_processed: boolean
         }
         Insert: {
           id?: string
-          created_at?: string
+          source_id: string
           title: string
-          content: string
-          images?: string[]
-          metadata?: Json
-          status?: 'draft' | 'published' | 'archived'
-          updated_at?: string
+          rewritten_content?: string | null
+          url: string
+          image_url?: string | null
+          author?: string | null
+          published_at?: string | null
+          created_at?: string
+          is_subscriber_only?: boolean
+          category?: string | null
+          original_content: string
+          is_processed?: boolean
         }
         Update: {
           id?: string
-          created_at?: string
+          source_id?: string
           title?: string
-          content?: string
-          images?: string[]
-          metadata?: Json
-          status?: 'draft' | 'published' | 'archived'
-          updated_at?: string
+          rewritten_content?: string | null
+          url?: string
+          image_url?: string | null
+          author?: string | null
+          published_at?: string | null
+          created_at?: string
+          is_subscriber_only?: boolean
+          category?: string | null
+          original_content?: string
+          is_processed?: boolean
         }
       }
-    }
-    Views: {
-      [_ in never]: never
-    }
-    Functions: {
-      [_ in never]: never
-    }
-    Enums: {
-      [_ in never]: never
+      sources: {
+        Row: {
+          id: string
+          name: string
+          url: string
+          enabled: boolean
+          last_scraped_at: string | null
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          name: string
+          url: string
+          enabled?: boolean
+          last_scraped_at?: string | null
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          name?: string
+          url?: string
+          enabled?: boolean
+          last_scraped_at?: string | null
+          created_at?: string
+        }
+      }
     }
   }
 }

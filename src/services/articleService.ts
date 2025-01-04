@@ -1,4 +1,4 @@
-import { supabase } from '../lib/supabase';
+import { getSupabaseClient } from '../lib/supabase';
 import type { Database } from '../lib/database.types';
 
 type Article = Database['public']['Tables']['articles']['Insert'];
@@ -7,7 +7,7 @@ type ArticleUpdate = Database['public']['Tables']['articles']['Update'];
 export class ArticleService {
   async createArticle(article: Article) {
     try {
-      const { data, error } = await supabase
+      const { data, error } = await getSupabaseClient()
         .from('articles')
         .insert(article)
         .select()
@@ -23,7 +23,7 @@ export class ArticleService {
 
   async updateArticle(id: string, updates: ArticleUpdate) {
     try {
-      const { data, error } = await supabase
+      const { data, error } = await getSupabaseClient()
         .from('articles')
         .update(updates)
         .eq('id', id)
@@ -40,7 +40,7 @@ export class ArticleService {
 
   async getUnprocessedArticles() {
     try {
-      const { data, error } = await supabase
+      const { data, error } = await getSupabaseClient()
         .from('articles')
         .select('*')
         .eq('is_processed', false)
@@ -56,7 +56,7 @@ export class ArticleService {
 
   async getArticleByUrl(url: string) {
     try {
-      const { data, error } = await supabase
+      const { data, error } = await getSupabaseClient()
         .from('articles')
         .select('*')
         .eq('url', url)
@@ -72,7 +72,7 @@ export class ArticleService {
 
   async markAsProcessed(id: string, rewrittenContent: string) {
     try {
-      const { error } = await supabase
+      const { error } = await getSupabaseClient()
         .from('articles')
         .update({
           is_processed: true,
@@ -86,4 +86,23 @@ export class ArticleService {
       throw error;
     }
   }
+
+  async deleteArticle(id: string) {
+    const { error } = await getSupabaseClient()
+      .from('articles')
+      .delete()
+      .eq('id', id);
+    if (error) throw error;
+  }
+
+  async getArticle(id: string) {
+    const { data, error } = await getSupabaseClient()
+      .from('articles')
+      .select('*')
+      .eq('id', id)
+      .single();
+    if (error) throw error;
+    return data;
+  }
+}
 }

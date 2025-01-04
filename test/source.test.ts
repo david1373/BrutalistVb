@@ -1,15 +1,24 @@
+// test/source.test.ts
 import { describe, expect, test, beforeAll, afterAll } from '@jest/globals';
-import { supabase } from '../src/lib/supabase';
 import { Scraper } from '../src/scraper';
 import { ArticleService } from '../src/services/articleService';
 
 const TEST_SOURCE_ID = '26ea468d-a5d5-457f-ad0e-c4a26b6a8698';
+
+// We'll define supabase at the top level, but only import it in beforeAll.
+let supabase: any;
 
 describe('Source-specific Scraper Tests', () => {
   let scraper: Scraper;
   let articleService: ArticleService;
 
   beforeAll(async () => {
+    // Defer the supabase import until after .env is loaded by Jest setup
+    supabase = require('../src/lib/supabase').supabase;
+
+    console.log('[DEBUG] SUPABASE_URL:', process.env.SUPABASE_URL);
+
+    
     scraper = new Scraper();
     articleService = new ArticleService();
     await scraper.init();
@@ -38,14 +47,15 @@ describe('Source-specific Scraper Tests', () => {
       .eq('id', TEST_SOURCE_ID)
       .single();
 
-    expect(source).toBeDefined();
-    
+    if (!source) {
+      throw new Error('Source not found');
+    }
+
     const results = await scraper.scrapeSource(source);
     expect(results).toBeDefined();
     expect(Array.isArray(results)).toBe(true);
     expect(results.length).toBeGreaterThan(0);
 
-    // Verify article structure
     const firstArticle = results[0];
     expect(firstArticle).toHaveProperty('title');
     expect(firstArticle).toHaveProperty('content');
@@ -55,18 +65,22 @@ describe('Source-specific Scraper Tests', () => {
 
   test('should respect rate limiting for test source', async () => {
     const startTime = Date.now();
-    
+
     const { data: source } = await supabase
       .from('sources')
       .select('url, scraping_config')
       .eq('id', TEST_SOURCE_ID)
       .single();
 
+    if (!source) {
+      throw new Error('Source not found');
+    }
+
     await scraper.scrapeSource(source);
-    
+
     const duration = Date.now() - startTime;
-    const minimumExpectedDuration = 5000; // 5 seconds minimum due to rate limiting
-    
+    const minimumExpectedDuration = 5000; // 5 seconds minimum
+
     expect(duration).toBeGreaterThan(minimumExpectedDuration);
   });
 
@@ -77,9 +91,12 @@ describe('Source-specific Scraper Tests', () => {
       .eq('id', TEST_SOURCE_ID)
       .single();
 
+    if (!source) {
+      throw new Error('Source not found');
+    }
+
     const results = await scraper.scrapeSource(source);
-    
-    // Save articles and verify they're in the database
+
     for (const article of results) {
       const savedArticle = await articleService.createArticle({
         ...article,

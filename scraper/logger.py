@@ -1,35 +1,38 @@
 import logging
-import sys
 from datetime import datetime
+import os
 
 def setup_logger():
-    """Set up the main logger."""
-    logger = logging.getLogger("scraper")
-    logger.setLevel(logging.INFO)
+    """Set up logger with both file and console handlers."""
+    # Create logs directory if it doesn't exist
+    logs_dir = os.path.join(os.getcwd(), 'logs')
+    os.makedirs(logs_dir, exist_ok=True)
     
-    # Console handler
-    console = logging.StreamHandler(sys.stdout)
-    console.setLevel(logging.INFO)
+    # Create logger
+    logger = logging.getLogger('scraper')
+    logger.setLevel(logging.INFO)
     
     # File handler
     file_handler = logging.FileHandler(
-        f"logs/scraper_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+        os.path.join(logs_dir, f"scraper_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
     )
     file_handler.setLevel(logging.INFO)
     
-    # Formatter
-    formatter = logging.Formatter(
-        "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-    )
-    console.setFormatter(formatter)
-    file_handler.setFormatter(formatter)
+    # Console handler
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
     
-    # Add handlers
-    logger.addHandler(console)
+    # Create formatter
+    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    file_handler.setFormatter(formatter)
+    console_handler.setFormatter(formatter)
+    
+    # Add handlers to logger
     logger.addHandler(file_handler)
+    logger.addHandler(console_handler)
     
     return logger
 
 def get_logger(name):
-    """Get a logger for a specific module."""
-    return logging.getLogger(f"scraper.{name}")
+    """Get a logger instance."""
+    return logging.getLogger(name)

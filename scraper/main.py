@@ -21,23 +21,8 @@ def init_supabase() -> Client:
         )
     
     try:
-        # Create client with additional options
-        client = create_client(
-            supabase_url,
-            supabase_key,
-            options={
-                'schema': 'public',
-                'headers': {
-                    'X-Client-Info': 'supabase-py/0.0.1',
-                },
-                'realtime': {
-                    'params': {
-                        'eventsPerSecond': 10
-                    }
-                }
-            }
-        )
-        return client
+        # Create client with simplified initialization
+        return create_client(supabase_url, supabase_key)
     except Exception as e:
         raise ConnectionError(f"Failed to initialize Supabase client: {str(e)}")
 
@@ -49,11 +34,13 @@ def main():
         supabase = init_supabase()
         
         # Test connection
-        health_check = supabase.table('sources').select("count(*)", count='exact').execute()
-        if health_check.error:
-            raise ConnectionError(f"Supabase connection test failed: {health_check.error}")
-            
-        logger.info("Successfully connected to Supabase")
+        try:
+            health_check = supabase.table('sources').select("*").limit(1).execute()
+            if hasattr(health_check, 'error') and health_check.error:
+                raise ConnectionError(f"Supabase connection test failed: {health_check.error}")
+            logger.info("Successfully connected to Supabase")
+        except Exception as e:
+            raise ConnectionError(f"Supabase connection test failed: {str(e)}")
         
         # Start scraping
         results = scrape_all_sources()
@@ -63,19 +50,16 @@ def main():
         for result in results:
             try:
                 # Get source ID
-                source = supabase.table("sources") \
-                    .select("id") \
-                    .eq("name", result["source"]) \
-                    .execute()
+                source_response = supabase.table("sources").select("*").eq("name", result["source"]).execute()
                 
-                if not source.data or len(source.data) == 0:
+                if not source_response.data or len(source_response.data) == 0:
                     logger.error(f"Source not found: {result['source']}")
                     continue
                 
-                source_id = source.data[0]['id']
+                source_id = source_response.data[0]['id']
                 
-                # Save article
-                article = {
+                # Prepare article data
+                article_data = {
                     "source_id": source_id,
                     "title": result["title"],
                     "url": result["url"],
@@ -83,37 +67,23 @@ def main():
                     "author": result["author"],
                     "published_at": result["published_at"],
                     "original_content": result["content"],
-                    "is_processed": False
+                    "is_processed": False,
+                    "is_subscriber_only": False  # Default to false
                 }
                 
-                # Check if article already exists
-                existing = supabase.table("articles") \
-                    .select("id") \
-                    .eq("url", result["url"]) \
-                    .execute()
+                # Try to insert article
+                try:
+                    article_response = supabase.table("articles").insert(article_data).execute()
+                    logger.info(f"Successfully inserted article: {result['title']}")
+                except Exception as e:
+                    if 'duplicate key value violates unique constraint' in str(e):
+                        logger.info(f"Article already exists: {result['title']}")
+                        continue
+                    else:
+                        raise e
                 
-                if existing.data and len(existing.data) > 0:
-                    # Update existing article
-                    article_response = supabase.table("articles") \
-                        .update(article) \
-                        .eq("id", existing.data[0]['id']) \
-                        .execute()
-                else:
-                    # Insert new article
-                    article_response = supabase.table("articles") \
-                        .insert(article) \
-                        .execute()
-                
-                if article_response.error:
-                    raise Exception(f"Failed to save article: {article_response.error.message}")
-                
-                # Update last scraped timestamp
-                supabase.table("sources") \
-                    .update({"last_scraped_at": "now()"}) \
-                    .eq("id", source_id) \
-                    .execute()
-                
-                logger.info(f"Successfully processed article: {result['title']}")
+                # Update source last_scraped_at
+                supabase.table("sources").update({"last_scraped_at": "now()"}).eq("id", source_id).execute()
                 
             except Exception as e:
                 logger.error(f"Error processing article: {str(e)}")

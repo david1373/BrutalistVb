@@ -69,7 +69,7 @@ class ParallelLeibalScraper(LeibalScraper):
                 "source": "Leibal",
                 "url": url,
                 "title": title,
-                "content": content.get_text(separator='\\n\\n'),
+                "content": content.get_text(separator='\n\n'),
                 "image_url": images[0] if images else None,
                 "additional_images": images[1:],
                 "author": author,

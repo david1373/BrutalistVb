@@ -1,1 +1,4 @@
-dGVzdCBjb250ZW50
+{
+  "encoding": "base64",
+  "content": "dGVzdCBjb250ZW50"
+}

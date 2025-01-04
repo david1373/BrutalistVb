@@ -72,23 +72,32 @@ def main():
                     "category": result.get("category", "Architecture")
                 }
                 
-                # Try to insert article
-                try:
-                    article_response = supabase.table("articles").insert(article_data).execute()
-                    logger.info(f"Successfully inserted article: {result['title']}")
-                except Exception as e:
-                    if 'duplicate key value violates unique constraint' in str(e):
-                        logger.info(f"Article already exists: {result['title']}")
-                        continue
-                    else:
-                        raise e
+                # Check if article exists
+                existing_article = supabase.table("articles") \
+                    .select("*") \
+                    .eq("url", result["url"]) \
+                    .execute()
                 
-                # Update source last_scraped_at using raw SQL
-                current_time = datetime.utcnow().isoformat()
-                update_query = f"UPDATE sources SET last_scraped_at = '{current_time}' WHERE id = '{source_id}'"
-                supabase.table("sources").select("*").eq("id", source_id).execute({
-                    "query": update_query
-                })
+                if existing_article.data and len(existing_article.data) > 0:
+                    # Update existing article if content has changed
+                    existing = existing_article.data[0]
+                    if existing["original_content"] != result["content"]:
+                        logger.info(f"Updating article with new content: {result['title']}")
+                        supabase.table("articles") \
+                            .update(article_data) \
+                            .eq("id", existing["id"]) \
+                            .execute()
+                    else:
+                        logger.info(f"Article exists with same content: {result['title']}")
+                else:
+                    # Insert new article
+                    logger.info(f"Inserting new article: {result['title']}")
+                    supabase.table("articles").insert(article_data).execute()
+                
+                # Update source last_scraped_at
+                supabase.table("sources").update({
+                    "last_scraped_at": datetime.utcnow().isoformat()
+                }).eq("id", source_id).execute()
                 
             except Exception as e:
                 logger.error(f"Error processing article: {str(e)}")

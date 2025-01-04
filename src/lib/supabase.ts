@@ -1,16 +1,20 @@
-import { createClient } from '@supabase/supabase-js';
-import type { Database } from './database.types';
+import { createClient } from '@supabase/supabase-js'
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
-const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
-
-if (!supabaseUrl || !supabaseAnonKey) {
-  throw new Error('Missing Supabase environment variables');
+if (!import.meta.env.VITE_SUPABASE_URL) {
+  throw new Error('Missing Supabase URL')
 }
 
-// Client for public operations
-export const supabase = createClient<Database>(supabaseUrl, supabaseAnonKey);
+if (!import.meta.env.VITE_SUPABASE_ANON_KEY) {
+  throw new Error('Missing Supabase Anon Key')
+}
 
-// Client with service role for admin operations
-export const supabaseAdmin = createClient<Database>(supabaseUrl, supabaseServiceKey);
+export const supabase = createClient(
+  import.meta.env.VITE_SUPABASE_URL,
+  import.meta.env.VITE_SUPABASE_ANON_KEY,
+  {
+    auth: {
+      persistSession: true,
+      autoRefreshToken: true
+    }
+  }
+)

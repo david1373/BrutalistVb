@@ -1,7 +1,7 @@
 import requests
 from bs4 import BeautifulSoup
 from datetime import datetime
-from ..logger import get_logger
+from scraper.logger import get_logger
 
 logger = get_logger(__name__)
 

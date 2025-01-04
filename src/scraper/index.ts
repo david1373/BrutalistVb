@@ -3,6 +3,17 @@ import { createBrowserContext } from './browser';
 import { ImageProcessor } from './imageProcessor';
 import { SCRAPER_CONFIG } from './config';
 
+interface Source {
+  url: string;
+  scraping_config?: {
+    selectors?: {
+      title?: string;
+      content?: string;
+      image?: string;
+    };
+  };
+}
+
 export class Scraper {
   private context: BrowserContext;
   private imageProcessor: ImageProcessor;
@@ -10,6 +21,39 @@ export class Scraper {
   async init() {
     this.context = await createBrowserContext();
     this.imageProcessor = new ImageProcessor();
+  }
+
+  async scrapeSource(source: Source): Promise<any[]> {
+    try {
+      const page = await this.context.newPage();
+      await page.goto(source.url, { waitUntil: 'networkidle' });
+
+      // Get all article links from the source page
+      const articleUrls = await page.evaluate(() => {
+        const links = Array.from(document.querySelectorAll('a[href*="/architecture/"]'));
+        return links.map(link => link.getAttribute('href')).filter(href => href !== null) as string[];
+      });
+
+      const articles = [];
+      for (const url of articleUrls) {
+        try {
+          const article = await this.scrapeArticle(url);
+          articles.push({
+            ...article,
+            url,
+            source: source.url
+          });
+        } catch (error) {
+          console.error(`Error scraping article ${url}:`, error);
+        }
+      }
+
+      await page.close();
+      return articles;
+    } catch (error) {
+      console.error('Error scraping source:', error);
+      return [];
+    }
   }
 
   async scrapeArticle(url: string, retryCount = 0): Promise<{

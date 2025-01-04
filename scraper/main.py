@@ -4,6 +4,7 @@ from dotenv import load_dotenv
 from supabase import create_client, Client
 from scrapers import scrape_all_sources
 from logger import setup_logger
+from datetime import datetime
 
 def init_supabase() -> Client:
     # Load environment variables
@@ -21,7 +22,6 @@ def init_supabase() -> Client:
         )
     
     try:
-        # Create client with simplified initialization
         return create_client(supabase_url, supabase_key)
     except Exception as e:
         raise ConnectionError(f"Failed to initialize Supabase client: {str(e)}")
@@ -68,7 +68,8 @@ def main():
                     "published_at": result["published_at"],
                     "original_content": result["content"],
                     "is_processed": False,
-                    "is_subscriber_only": False  # Default to false
+                    "is_subscriber_only": False,
+                    "category": result.get("category", "Architecture")
                 }
                 
                 # Try to insert article
@@ -82,8 +83,12 @@ def main():
                     else:
                         raise e
                 
-                # Update source last_scraped_at
-                supabase.table("sources").update({"last_scraped_at": "now()"}).eq("id", source_id).execute()
+                # Update source last_scraped_at using raw SQL
+                current_time = datetime.utcnow().isoformat()
+                update_query = f"UPDATE sources SET last_scraped_at = '{current_time}' WHERE id = '{source_id}'"
+                supabase.table("sources").select("*").eq("id", source_id).execute({
+                    "query": update_query
+                })
                 
             except Exception as e:
                 logger.error(f"Error processing article: {str(e)}")

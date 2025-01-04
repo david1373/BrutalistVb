@@ -2,6 +2,7 @@ import requests
 from bs4 import BeautifulSoup
 from scraper.scrapers.utils import get_page, extract_date
 from scraper.logger import get_logger
+import time
 
 logger = get_logger(__name__)
 
@@ -39,7 +40,8 @@ def scrape_dezeen():
                     logger.warning(f"Skipping article - missing link or title")
                     continue
                 
-                logger.info(f"Processing article: {title.get_text(strip=True)}")
+                article_title = title.get_text(strip=True)
+                logger.info(f"Processing article: {article_title}")
                 
                 # Get full article content
                 article_url = link.get("href")
@@ -49,24 +51,38 @@ def scrape_dezeen():
                 article_soup = get_page(article_url)
                 content = ""
                 if article_soup:
-                    content_div = article_soup.select_one(".article-content") or \
-                                 article_soup.select_one(".content") or \
-                                 article_soup.select_one(".post-content")
+                    # Get the article content
+                    content_div = article_soup.select_one(".entry__content") or \
+                                 article_soup.select_one(".article__content") or \
+                                 article_soup.select_one(".post__content") or \
+                                 article_soup.select_one("article")
+                                 
                     if content_div:
-                        content = content_div.get_text(strip=True)
+                        # Get all paragraphs
+                        paragraphs = content_div.find_all('p')
+                        content = '\n\n'.join([p.get_text(strip=True) for p in paragraphs if p.get_text(strip=True)])
+                        
+                        # Add image captions if they exist
+                        image_captions = content_div.find_all('figcaption')
+                        if image_captions:
+                            captions = '\n\n'.join([cap.get_text(strip=True) for cap in image_captions if cap.get_text(strip=True)])
+                            content = f"{content}\n\nImage Captions:\n{captions}"
+                
+                # Add a delay to avoid hitting rate limits
+                time.sleep(0.5)
                 
                 articles.append({
                     "source": "Dezeen",
-                    "title": title.get_text(strip=True),
+                    "title": article_title,
                     "url": article_url,
-                    "image_url": image["src"] if image else None,
+                    "image_url": image["src"] if image and "src" in image.attrs else None,
                     "author": author.get_text(strip=True) if author else None,
                     "published_at": extract_date(date["datetime"]) if date and date.get("datetime") else None,
                     "content": content,
                     "category": "Architecture"
                 })
                 
-                logger.info(f"Successfully processed article: {title.get_text(strip=True)}")
+                logger.info(f"Successfully processed article: {article_title}")
                 
             except Exception as e:
                 logger.error(f"Error processing Dezeen article: {str(e)}")

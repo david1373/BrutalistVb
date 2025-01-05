@@ -1,6 +1,6 @@
 from typing import List, Dict, Any, Optional
 from datetime import datetime
-from .base_scraper import BaseScraper, ScrapedArticle, ContentBlock
+from scraper.base_scraper import BaseScraper, ScrapedArticle, ContentBlock
 import logging
 from urllib.parse import urljoin
 from playwright.sync_api import TimeoutError as PlaywrightTimeout

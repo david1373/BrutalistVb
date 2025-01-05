@@ -2,7 +2,7 @@ import logging
 import argparse
 import sys
 from dotenv import load_dotenv
-from leibal_scraper import LeibalScraper
+from scraper.leibal_scraper import LeibalScraper
 
 # Configure logging
 logging.basicConfig(

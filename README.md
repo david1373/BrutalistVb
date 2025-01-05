@@ -2,26 +2,36 @@
 
 Brutalist architecture and design news app with AI-powered content transformation.
 
+## Current Status
+We've transitioned to a Python-based scraper for improved reliability and maintainability.
+
 ## Recent Updates
-
-### Enhanced Scraper Implementation
-- Added structured content parsing with metadata
-- Better error handling and retries
-- Improved content validation
-- Support for multiple content types
-
-### Database Changes
-- New columns for scraping status tracking
-- Added structured content storage
-- Improved indexing
-- Enhanced trigger functions
+- Enhanced Python scraper implementation
+- Improved content extraction
+- Better error handling and retry logic
 
 ## Getting Started
-1. Run database migrations
-2. Install dependencies: `npm install`
-3. Start development server: `npm run dev`
 
-## Testing
+### Frontend (React/TypeScript)
 ```bash
-npm run test
+npm install
+npm run dev
 ```
+
+### Scraper (Python)
+```bash
+pip install -r requirements.txt
+python scraper/run_scraper.py --pages 5
+```
+
+## Environment Setup
+Create a `.env` file with:
+```
+SUPABASE_URL=your_supabase_url
+SUPABASE_KEY=your_supabase_key
+```
+
+## Architecture
+- Frontend: React/TypeScript for UI
+- Scraper: Python/Playwright for content extraction
+- Database: Supabase for storage and state management

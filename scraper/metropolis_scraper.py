@@ -3,7 +3,9 @@ from datetime import datetime
 from scraper.base_scraper import BaseScraper, ScrapedArticle, ContentBlock
 import logging
 from urllib.parse import urljoin, urlparse
+import requests
 from playwright.sync_api import TimeoutError as PlaywrightTimeout
+from bs4 import BeautifulSoup
 
 class MetropolisScraper(BaseScraper):
     def __init__(self, source_id: str):
@@ -14,56 +16,72 @@ class MetropolisScraper(BaseScraper):
         """Clean and normalize URL"""
         if not url:
             return ''
-        # Convert relative URLs to absolute
+        # Handle both relative and absolute URLs
         if not url.startswith(('http://', 'https://')):
             return urljoin(self.base_url, url)
         return url
 
     def get_article_urls(self, page: int = 1) -> List[str]:
-        """Get all article URLs from a page"""
+        """Get all article URLs from a page using requests instead of Playwright"""
         try:
-            # Metropolis uses /page/{page} structure for pagination
+            # First make a request to the main page
             url = urljoin(self.base_url, f'page/{page}' if page > 1 else '')
-            self.logger.info(f"Navigating to: {url}")
-            self.page.goto(url, wait_until='domcontentloaded')
+            self.logger.info(f"Requesting: {url}")
+            
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.5',
+            }
+            
+            response = requests.get(url, headers=headers, timeout=30)
+            response.raise_for_status()
+            
+            # Parse the page with BeautifulSoup
+            soup = BeautifulSoup(response.text, 'lxml')
             
             # Find all article links
-            links = self.page.query_selector_all('main a[href]')
-            urls = [self._clean_url(link.get_attribute('href')) for link in links]
-            
-            # Filter for actual articles and deduplicate
-            filtered_urls = []
-            for url in urls:
-                if not url:
+            urls = []
+            for link in soup.find_all('a', href=True):
+                href = link['href']
+                full_url = self._clean_url(href)
+                
+                # Skip non-article URLs
+                if not full_url.startswith(self.base_url):
                     continue
-                parsed = urlparse(url)
+                    
+                parsed = urlparse(full_url)
                 path = parsed.path
+                
                 # Skip category pages and other non-article URLs
                 if path in ['/projects/', '/profiles/', '/viewpoints/', '/products/']:
                     continue
                 if '/jobs' in path or '/issues/' in path:
                     continue
                 if any(section in path for section in ['/projects/', '/profiles/', '/viewpoints/', '/products/']):
-                    filtered_urls.append(url)
+                    urls.append(full_url)
             
-            return list(set(filtered_urls))
+            return list(set(urls))
 
-        except PlaywrightTimeout:
-            self.logger.error(f"Timeout while fetching article list from page {page}")
-            return []
         except Exception as e:
             self.logger.error(f"Error fetching article list: {str(e)}")
             return []
 
     def scrape_article(self, url: str) -> Optional[ScrapedArticle]:
-        """Scrape a single article"""
+        """Scrape a single article using both requests and Playwright"""
         try:
-            self.logger.info(f"Attempting to scrape article: {url}")
-            # Clean the URL
-            url = self._clean_url(url)
+            # First check if the URL is accessible with requests
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            }
+            response = requests.head(url, headers=headers, timeout=10)
+            response.raise_for_status()
             
-            # Navigate to the article
+            # If accessible, use Playwright for detailed scraping
             self.page.goto(url, wait_until='domcontentloaded', timeout=30000)
+            self.logger.info(f"Successfully navigated to: {url}")
+            
+            # Wait for main content
             self.page.wait_for_selector('article', timeout=10000)
 
             # Get article content
@@ -89,26 +107,26 @@ class MetropolisScraper(BaseScraper):
                     'tags': []
                 }
 
-            # Get main image with error handling
+            # Get main image
             main_image = {
                 'url': '',
                 'alt': '',
                 'caption': ''
             }
             try:
-                img_element = article_element.query_selector('img.wp-post-image') or \
-                            article_element.query_selector('.post-thumbnail img') or \
-                            article_element.query_selector('article img')
-                if img_element:
-                    main_image = {
-                        'url': self._clean_url(img_element.get_attribute('src') or ''),
-                        'alt': img_element.get_attribute('alt') or '',
-                        'caption': img_element.get_attribute('title') or ''
-                    }
+                selectors = ['img.wp-post-image', '.post-thumbnail img', 'article img']
+                for selector in selectors:
+                    img_element = article_element.query_selector(selector)
+                    if img_element:
+                        main_image = {
+                            'url': self._clean_url(img_element.get_attribute('src') or ''),
+                            'alt': img_element.get_attribute('alt') or '',
+                            'caption': img_element.get_attribute('title') or ''
+                        }
+                        break
             except Exception as e:
                 self.logger.warning(f"Error extracting main image: {str(e)}")
 
-            self.logger.info(f"Successfully scraped content from {url}")
             return ScrapedArticle(
                 url=url,
                 title=meta_info['title'],

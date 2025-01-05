@@ -37,6 +37,7 @@ class BaseScraper:
         self.browser: Optional[Browser] = None
         self.page: Optional[Page] = None
         self.playwright = None
+        self.context = None
         self.supabase: Client = create_client(
             os.getenv('SUPABASE_URL'),
             os.getenv('SUPABASE_KEY')
@@ -52,30 +53,32 @@ class BaseScraper:
 
     def start(self):
         """Initialize the browser and configure settings"""
-        self.playwright = sync_playwright().start()
-        browser_args = [
-            '--disable-gpu',
-            '--disable-dev-shm-usage',
-            '--disable-setuid-sandbox',
-            '--no-sandbox',
-            '--single-process',
-        ]
-        self.browser = self.playwright.chromium.launch(
-            headless=True,
-            args=browser_args
-        )
-        self.page = self.browser.new_page(user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-
-        # Configure page
-        self.page.set_viewport_size({"width": 1920, "height": 1080})
-        self.page.set_default_timeout(30000)
-        self.page.set_default_navigation_timeout(30000)
-        self._setup_request_interception()
-
-    def _setup_request_interception(self):
-        """Configure request interception to block unnecessary resources"""
-        self.page.route("**/*.{png,jpg,jpeg,gif,svg,css,font,woff2}",
-                       lambda route: route.abort())
+        try:
+            self.playwright = sync_playwright().start()
+            browser_args = [
+                '--disable-gpu',
+                '--disable-dev-shm-usage',
+                '--disable-setuid-sandbox',
+                '--no-sandbox',
+            ]
+            
+            self.browser = self.playwright.chromium.launch(
+                headless=True,
+                args=browser_args
+            )
+            
+            self.context = self.browser.new_context(
+                viewport={'width': 1920, 'height': 1080},
+                user_agent='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            )
+            
+            self.page = self.context.new_page()
+            self.page.set_default_timeout(30000)
+            self.page.set_default_navigation_timeout(30000)
+        except Exception as e:
+            self.logger.error(f"Error starting browser: {str(e)}")
+            self.close()
+            raise
 
     def extract_structured_content(self, article_element) -> List[ContentBlock]:
         """Extract content into structured blocks"""
@@ -139,16 +142,6 @@ class BaseScraper:
 
         return '\n\n'.join(processed)
 
-    def extract_meta_info(self) -> Dict[str, Any]:
-        """Extract meta information from the page"""
-        return {
-            'title': self.page.title(),
-            'meta_description': self.page.query_selector('meta[name="description"]').get_attribute('content') if self.page.query_selector('meta[name="description"]') else '',
-            'author': self.page.query_selector('a[rel="author"]').text_content() if self.page.query_selector('a[rel="author"]') else 'Unknown',
-            'published_at': self.page.query_selector('time').get_attribute('datetime') if self.page.query_selector('time') else datetime.now().isoformat(),
-            'tags': [tag.text_content() for tag in self.page.query_selector_all('a[rel="tag"]') if tag]
-        }
-
     def save_article(self, article: ScrapedArticle) -> Dict[str, Any]:
         """Save or update article in Supabase"""
         article_data = {
@@ -176,8 +169,22 @@ class BaseScraper:
     def close(self):
         """Clean up resources"""
         if self.page:
-            self.page.close()
+            try:
+                self.page.close()
+            except:
+                pass
+        if self.context:
+            try:
+                self.context.close()
+            except:
+                pass
         if self.browser:
-            self.browser.close()
+            try:
+                self.browser.close()
+            except:
+                pass
         if self.playwright:
-            self.playwright.stop()
+            try:
+                self.playwright.stop()
+            except:
+                pass

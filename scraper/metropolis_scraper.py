@@ -8,62 +8,52 @@ from urllib.parse import urljoin, urlparse
 
 class MetropolisScraper(BaseScraper):
     def __init__(self, source_id: str):
-        super().__init__('https://metropolismag.com', source_id)
+        super().__init__('https://metropolismag.com/projects/', source_id)
         self.logger = logging.getLogger(__name__)
 
     def get_article_urls(self, page: int = 1) -> List[Dict[str, str]]:
         """Get all article URLs and titles from a page"""
         try:
-            # Navigate to the page
-            url = f"{self.base_url}/page/{page}" if page > 1 else self.base_url
+            # Navigate to the page with projects
+            url = f"{self.base_url}page/{page}/" if page > 1 else self.base_url
             self.logger.info(f"Navigating to: {url}")
             
             # Navigate and wait for content
             self.page.goto(url)
-            self.page.wait_for_selector('main')
+            self.page.wait_for_selector('.post-feed')
             time.sleep(2)  # Allow dynamic content to load
             
-            # First, get all article cards
+            # Get all article entries
             articles = []
-            article_cards = self.page.query_selector_all('main article')
+            article_entries = self.page.query_selector_all('.post-feed article')
             
-            self.logger.info(f"Found {len(article_cards)} article cards")
+            self.logger.info(f"Found {len(article_entries)} article entries")
             
-            for card in article_cards:
+            for entry in article_entries:
                 try:
-                    # Get heading and link
-                    heading = card.query_selector('h2, h3')
-                    link = card.query_selector('h2 a, h3 a')
+                    # Get title and link
+                    title_link = entry.query_selector('.entry-title a')
+                    if not title_link:
+                        continue
+                        
+                    href = title_link.get_attribute('href')
+                    title = title_link.text_content().strip()
                     
-                    if not heading or not link:
+                    if not href or not title:
                         continue
                         
-                    href = link.get_attribute('href')
-                    if not href:
-                        continue
-                        
-                    # Skip certain URLs
-                    if any(skip in href for skip in ['/jobs', '/issues/']):
-                        continue
-                    if href in ['/', '/projects/', '/profiles/', '/viewpoints/', '/products/']:
-                        continue
-                        
-                    title = heading.text_content().strip()
-                    if not title or title.lower() in ['learn more', 'read more']:
-                        continue
-                    
                     # Build full URL if needed
                     if not href.startswith('http'):
                         href = urljoin(self.base_url, href.lstrip('/'))
                     
+                    self.logger.info(f"Found article: {title} at {href}")
                     articles.append({
                         'url': href,
                         'title': title
                     })
-                    self.logger.info(f"Found article: {title} at {href}")
                         
                 except Exception as e:
-                    self.logger.error(f"Error processing article card: {str(e)}")
+                    self.logger.error(f"Error processing article entry: {str(e)}")
                     continue
             
             # Remove duplicates while preserving order
@@ -108,9 +98,14 @@ class MetropolisScraper(BaseScraper):
             if not article_element:
                 raise ValueError("Could not find article content")
 
+            # Get main content area
+            content_area = article_element.query_selector('.entry-content')
+            if not content_area:
+                content_area = article_element  # Fallback to full article if no specific content area
+
             # Extract content
-            original_content = article_element.inner_html()
-            structured_content = self.extract_structured_content(article_element)
+            original_content = content_area.inner_html()
+            structured_content = self.extract_structured_content(content_area)
             processed_content = self.process_content(structured_content)
 
             # Extract meta information
@@ -128,7 +123,7 @@ class MetropolisScraper(BaseScraper):
                 meta_info['meta_description'] = meta_desc.get_attribute('content') or ''
             
             # Try to get author
-            author = self.page.query_selector('.author-name')
+            author = self.page.query_selector('.author-name, .author')
             if author:
                 meta_info['author'] = author.text_content().strip()
                 
@@ -138,7 +133,7 @@ class MetropolisScraper(BaseScraper):
                 meta_info['published_at'] = time_elem.get_attribute('datetime') or datetime.now().isoformat()
                 
             # Try to get tags
-            tags = self.page.query_selector_all('.tags a')
+            tags = self.page.query_selector_all('.tags a, .category a')
             if tags:
                 meta_info['tags'] = [tag.text_content().strip() for tag in tags if tag]
 
@@ -150,8 +145,8 @@ class MetropolisScraper(BaseScraper):
             }
             
             img_selectors = [
-                'img.wp-post-image',
                 '.post-thumbnail img',
+                '.entry-content img',
                 'article img'
             ]
             

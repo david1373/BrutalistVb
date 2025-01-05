@@ -11,18 +11,6 @@ class MetropolisScraper(BaseScraper):
         super().__init__('https://metropolismag.com', source_id)
         self.logger = logging.getLogger(__name__)
 
-    def _clean_url(self, url: str) -> str:
-        """Normalize URL format"""
-        if not url:
-            return ''
-            
-        # Handle relative URLs
-        if not url.startswith(('http://', 'https://')):
-            return urljoin(self.base_url, url.lstrip('/'))
-            
-        # Already absolute URL
-        return url
-
     def get_article_urls(self, page: int = 1) -> List[Dict[str, str]]:
         """Get all article URLs and titles from a page"""
         try:
@@ -33,59 +21,49 @@ class MetropolisScraper(BaseScraper):
             # Navigate and wait for content
             self.page.goto(url)
             self.page.wait_for_selector('main')
+            time.sleep(2)  # Allow dynamic content to load
             
-            # Find all article links
+            # First, get all article cards
             articles = []
-            links = self.page.query_selector_all('main article a[href]')
+            article_cards = self.page.query_selector_all('main article')
             
-            seen_urls = set()
-            for link in links:
+            self.logger.info(f"Found {len(article_cards)} article cards")
+            
+            for card in article_cards:
                 try:
+                    # Get heading and link
+                    heading = card.query_selector('h2, h3')
+                    link = card.query_selector('h2 a, h3 a')
+                    
+                    if not heading or not link:
+                        continue
+                        
                     href = link.get_attribute('href')
                     if not href:
                         continue
                         
-                    # Clean and normalize URL
-                    cleaned_url = self._clean_url(href)
-                    if not cleaned_url or cleaned_url in seen_urls:
-                        continue
-                        
-                    # Parse URL to check path
-                    parsed = urlparse(cleaned_url)
-                    if not parsed.path:
-                        continue
-                        
                     # Skip certain URLs
-                    if any(skip in parsed.path for skip in ['/jobs', '/issues/']):
+                    if any(skip in href for skip in ['/jobs', '/issues/']):
                         continue
-                    if parsed.path in ['/', '/projects/', '/profiles/', '/viewpoints/', '/products/']:
-                        continue
-                    if not any(section in parsed.path for section in ['/projects/', '/profiles/', '/viewpoints/', '/products/']):
+                    if href in ['/', '/projects/', '/profiles/', '/viewpoints/', '/products/']:
                         continue
                         
-                    # Get title
-                    title = None
-                    # Try to get title from article card heading
-                    article = link.evaluate('node => node.closest("article")')
-                    if article:
-                        heading = article.query_selector('h2, h3')
-                        if heading:
-                            title = heading.text_content().strip()
-                            
-                    # If no title found, try link text
-                    if not title:
-                        title = link.text_content().strip()
-                        
-                    # If we have both URL and title, add to results
-                    if title and not title.lower() in ['learn more', 'read more']:
-                        articles.append({
-                            'url': cleaned_url,
-                            'title': title
-                        })
-                        seen_urls.add(cleaned_url)
+                    title = heading.text_content().strip()
+                    if not title or title.lower() in ['learn more', 'read more']:
+                        continue
+                    
+                    # Build full URL if needed
+                    if not href.startswith('http'):
+                        href = urljoin(self.base_url, href.lstrip('/'))
+                    
+                    articles.append({
+                        'url': href,
+                        'title': title
+                    })
+                    self.logger.info(f"Found article: {title} at {href}")
                         
                 except Exception as e:
-                    self.logger.error(f"Error processing link: {str(e)}")
+                    self.logger.error(f"Error processing article card: {str(e)}")
                     continue
             
             # Remove duplicates while preserving order
@@ -98,7 +76,7 @@ class MetropolisScraper(BaseScraper):
             
             self.logger.info(f"Found {len(unique_articles)} unique articles")
             for article in unique_articles:
-                self.logger.info(f"Found article: {article['title']} at {article['url']}")
+                self.logger.info(f"Final article: {article['title']} at {article['url']}")
                 
             return unique_articles
 
@@ -114,30 +92,16 @@ class MetropolisScraper(BaseScraper):
             url = article_info['url']
             self.logger.info(f"Attempting to scrape article: {article_info['title']} at {url}")
             
-            # Try with different URL formats
-            urls_to_try = [
-                url,  # Original URL
-                url.replace('http://', 'https://'),  # Force HTTPS
-                self._clean_url(urlparse(url).path),  # Relative path with base
-            ]
+            # Navigate to article
+            response = self.page.goto(url, wait_until='domcontentloaded')
+            if not response.ok:
+                raise ValueError(f"Got status {response.status} when accessing article")
             
-            success = False
-            for try_url in urls_to_try:
-                try:
-                    self.logger.info(f"Trying URL: {try_url}")
-                    response = self.page.goto(try_url, wait_until='domcontentloaded')
-                    if response and response.ok:
-                        success = True
-                        break
-                except Exception as e:
-                    self.logger.warning(f"Failed with URL {try_url}: {str(e)}")
-                    continue
-                    
-            if not success:
-                raise ValueError("Could not access article with any URL variant")
-
+            # Allow content to load
+            time.sleep(2)
+            
             # Wait for content
-            self.page.wait_for_selector('article')
+            self.page.wait_for_selector('article', timeout=10000)
 
             # Get article content
             article_element = self.page.query_selector('article')
@@ -166,7 +130,7 @@ class MetropolisScraper(BaseScraper):
             # Try to get author
             author = self.page.query_selector('.author-name')
             if author:
-                meta_info['author'] = author.text_content()
+                meta_info['author'] = author.text_content().strip()
                 
             # Try to get date
             time_elem = self.page.query_selector('time')
@@ -176,7 +140,7 @@ class MetropolisScraper(BaseScraper):
             # Try to get tags
             tags = self.page.query_selector_all('.tags a')
             if tags:
-                meta_info['tags'] = [tag.text_content() for tag in tags if tag]
+                meta_info['tags'] = [tag.text_content().strip() for tag in tags if tag]
 
             # Get main image
             main_image = {
@@ -194,14 +158,17 @@ class MetropolisScraper(BaseScraper):
             for selector in img_selectors:
                 img = self.page.query_selector(selector)
                 if img:
-                    main_image = {
-                        'url': self._clean_url(img.get_attribute('src') or ''),
-                        'alt': img.get_attribute('alt') or '',
-                        'caption': img.get_attribute('title') or ''
-                    }
-                    break
+                    src = img.get_attribute('src')
+                    if src:
+                        main_image = {
+                            'url': urljoin(self.base_url, src.lstrip('/')),
+                            'alt': img.get_attribute('alt') or '',
+                            'caption': img.get_attribute('title') or ''
+                        }
+                        break
             
-            return ScrapedArticle(
+            # Create article object
+            article = ScrapedArticle(
                 url=url,
                 title=meta_info['title'],
                 meta_description=meta_info['meta_description'],
@@ -214,6 +181,9 @@ class MetropolisScraper(BaseScraper):
                 tags=meta_info['tags'],
                 source_id=self.source_id
             )
+            
+            self.logger.info(f"Successfully scraped article: {article.title}")
+            return article
 
         except Exception as e:
             self.logger.error(f"Error scraping article {article_info['title']}: {str(e)}")

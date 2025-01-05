@@ -1,0 +1,15 @@
+setup.py
+scraper/__init__.py
+scraper/logger.py
+scraper/main.py
+scraper.egg-info/PKG-INFO
+scraper.egg-info/SOURCES.txt
+scraper.egg-info/dependency_links.txt
+scraper.egg-info/requires.txt
+scraper.egg-info/top_level.txt
+scraper/scrapers/__init__.py
+scraper/scrapers/dezeen.py
+scraper/scrapers/leibal.py
+scraper/scrapers/metropolis.py
+scraper/scrapers/parallel_leibal.py
+scraper/scrapers/utils.py

@@ -1,0 +1,9 @@
+Metadata-Version: 2.1
+Name: scraper
+Version: 0.1
+Requires-Dist: python-dotenv
+Requires-Dist: supabase
+Requires-Dist: loguru
+Requires-Dist: requests
+Requires-Dist: beautifulsoup4
+Requires-Dist: playwright

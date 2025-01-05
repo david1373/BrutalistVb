@@ -9,10 +9,12 @@ interface ScrapingOptions {
 interface ArticleData {
   title: string;
   content: string;
+  originalContent: string;  // Added for storing raw content
   imageUrl: string;
   author: string;
   publishedAt: string;
   tags: string[];
+  metaDescription?: string;  // Added for SEO content
 }
 
 export class PlaywrightScraper {
@@ -37,14 +39,19 @@ export class PlaywrightScraper {
       });
       this.page = await this.browser.newPage();
       
-      // Set default timeout
-      await this.page.setDefaultTimeout(30000);
+      // Enhanced timeout for better reliability
+      await this.page.setDefaultTimeout(45000);
       
       // Add custom retry logic
       this.page.on('crashedframe', async () => {
         console.log('Frame crashed, retrying...');
         await this.retry();
       });
+
+      // Optimize resource loading
+      await this.page.route('**/*.{png,jpg,jpeg,gif,svg}', route => 
+        route.abort()
+      );
     } catch (error) {
       console.error('Failed to initialize browser:', error);
       throw error;
@@ -58,38 +65,85 @@ export class PlaywrightScraper {
     this.page = await this.browser.newPage();
   }
 
+  private async extractContent(selector: string): Promise<{ processed: string; original: string }> {
+    if (!this.page) throw new Error('Browser not initialized');
+
+    return await this.page.evaluate((sel) => {
+      const element = document.querySelector(sel);
+      if (!element) return { processed: '', original: '' };
+
+      // Store original HTML content
+      const original = element.innerHTML;
+
+      // Clone node for processing
+      const processed = element.cloneNode(true) as HTMLElement;
+
+      // Remove unwanted elements
+      processed.querySelectorAll('script, style, iframe, .advertisement').forEach(el => el.remove());
+
+      // Extract text content while preserving some structure
+      const processedText = processed.innerText
+        .split('\n')
+        .map(line => line.trim())
+        .filter(line => line.length > 0)
+        .join('\n');
+
+      return {
+        processed: processedText,
+        original: original
+      };
+    }, selector);
+  }
+
   async scrapeArticle(url: string): Promise<ArticleData> {
     if (!this.page) throw new Error('Browser not initialized');
 
     let retries = 0;
     while (retries < this.options.maxRetries) {
       try {
-        await this.page.goto(url, { waitUntil: 'networkidle' });
+        await this.page.goto(url, { 
+          waitUntil: 'networkidle',
+          timeout: 30000 
+        });
         
-        // Wait for essential elements
-        await this.page.waitForSelector('h1.entry-title');
-        await this.page.waitForSelector('div.entry-content');
+        // Wait for essential elements with longer timeout
+        await Promise.all([
+          this.page.waitForSelector('h1.entry-title', { timeout: 30000 }),
+          this.page.waitForSelector('div.entry-content', { timeout: 30000 })
+        ]);
         
-        // Extract data
-        const title = await this.page.$eval('h1.entry-title', el => el.textContent?.trim() ?? '');
-        const content = await this.page.$eval('div.entry-content', el => el.textContent?.trim() ?? '');
-        const imageUrl = await this.page.$eval('div.entry-content img', img => img.getAttribute('src') ?? '');
-        const author = await this.page.$eval('a[rel="author"]', el => el.textContent?.trim() ?? '');
-        const publishedAt = await this.page.$eval('time', time => time.getAttribute('datetime') ?? '');
-        const tags = await this.page.$$eval('a[rel="tag"]', els => els.map(el => el.textContent?.trim() ?? ''));
+        // Extract content with both original and processed versions
+        const { processed: content, original: originalContent } = 
+          await this.extractContent('div.entry-content');
+
+        // Enhanced metadata extraction
+        const [title, imageUrl, author, publishedAt, metaDescription] = await Promise.all([
+          this.page.$eval('h1.entry-title', el => el.textContent?.trim() ?? ''),
+          this.page.$eval('div.entry-content img', img => img.getAttribute('src') ?? ''),
+          this.page.$eval('a[rel="author"]', el => el.textContent?.trim() ?? ''),
+          this.page.$eval('time', time => time.getAttribute('datetime') ?? ''),
+          this.page.$eval('meta[name="description"]', meta => meta.getAttribute('content') ?? '')
+        ]);
+
+        // Enhanced tag extraction with error handling
+        const tags = await this.page.$$eval('a[rel="tag"]', els => 
+          els.map(el => el.textContent?.trim() ?? '').filter(tag => tag.length > 0)
+        );
 
         return {
           title,
           content,
+          originalContent,
           imageUrl,
           author,
           publishedAt,
-          tags
+          tags,
+          metaDescription
         };
       } catch (error) {
         retries++;
         console.error(`Failed to scrape article (attempt ${retries}):`, error);
-        await new Promise(resolve => setTimeout(resolve, this.options.waitTime));
+        await new Promise(resolve => setTimeout(resolve, this.options.waitTime * retries));
         
         if (retries === this.options.maxRetries) {
           throw new Error(`Failed to scrape article after ${retries} attempts`);
@@ -105,31 +159,23 @@ export class PlaywrightScraper {
 
     try {
       const url = `${this.baseUrl}/architecture/page/${pageNum}`;
-      await this.page.goto(url, { waitUntil: 'networkidle' });
+      await this.page.goto(url, { 
+        waitUntil: 'networkidle',
+        timeout: 30000 
+      });
       
-      // Wait for article links to load
-      await this.page.waitForSelector('article a');
+      // Enhanced selector for better accuracy
+      await this.page.waitForSelector('article a[href*="/architecture/"]');
       
-      // Extract all article URLs
-      return await this.page.$$eval('article a', links => 
-        links.map(link => link.href)
+      // Improved URL extraction with validation
+      return await this.page.$$eval('article a[href*="/architecture/"]', links => 
+        links
+          .map(link => link.href)
+          .filter(href => href && href.includes('/architecture/'))
+          .filter((href, index, self) => self.indexOf(href) === index) // Remove duplicates
       );
     } catch (error) {
       console.error('Failed to scrape article list:', error);
-      throw error;
-    }
-  }
-
-  async takeScreenshot(selector: string, path: string) {
-    if (!this.page) throw new Error('Browser not initialized');
-    
-    try {
-      const element = await this.page.$(selector);
-      if (element) {
-        await element.screenshot({ path });
-      }
-    } catch (error) {
-      console.error('Failed to take screenshot:', error);
       throw error;
     }
   }

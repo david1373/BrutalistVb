@@ -60,21 +60,37 @@ class BaseScraper:
                 '--disable-dev-shm-usage',
                 '--disable-setuid-sandbox',
                 '--no-sandbox',
+                '--no-zygote',
+                '--single-process',
+                '--disable-web-security',
+                '--disable-features=IsolateOrigins,site-per-process',
             ]
             
+            # Configure Chromium options for reliability
             self.browser = self.playwright.chromium.launch(
                 headless=True,
-                args=browser_args
+                args=browser_args,
+                ignore_default_args=['--enable-automation']
             )
             
+            # Configure browser context with common headers
             self.context = self.browser.new_context(
                 viewport={'width': 1920, 'height': 1080},
-                user_agent='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                user_agent='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                extra_http_headers={
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                    'Accept-Language': 'en-US,en;q=0.5',
+                    'Accept-Encoding': 'gzip, deflate, br',
+                }
             )
             
             self.page = self.context.new_page()
-            self.page.set_default_timeout(30000)
-            self.page.set_default_navigation_timeout(30000)
+            self.page.set_default_timeout(60000)  # Increase timeout to 60 seconds
+            self.page.set_default_navigation_timeout(60000)  # Increase navigation timeout to 60 seconds
+            
+            # Disable loading images and other resources to speed up
+            self.context.route("**/*.{png,jpg,jpeg,webp,gif,css,woff2}", lambda route: route.abort())
+            
         except Exception as e:
             self.logger.error(f"Error starting browser: {str(e)}")
             self.close()

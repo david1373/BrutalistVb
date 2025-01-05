@@ -2,90 +2,77 @@ from typing import List, Dict, Any, Optional
 from datetime import datetime
 from scraper.base_scraper import BaseScraper, ScrapedArticle, ContentBlock
 import logging
-from urllib.parse import urljoin, urlparse
-import requests
+from urllib.parse import urljoin
 from playwright.sync_api import TimeoutError as PlaywrightTimeout
-from bs4 import BeautifulSoup
+import time
 
 class MetropolisScraper(BaseScraper):
     def __init__(self, source_id: str):
         super().__init__('https://metropolismag.com', source_id)
         self.logger = logging.getLogger(__name__)
 
-    def _clean_url(self, url: str) -> str:
-        """Clean and normalize URL"""
-        if not url:
-            return ''
-        # Handle both relative and absolute URLs
-        if not url.startswith(('http://', 'https://')):
-            return urljoin(self.base_url, url)
-        return url
-
-    def get_article_urls(self, page: int = 1) -> List[str]:
-        """Get all article URLs from a page using requests instead of Playwright"""
+    def get_article_urls(self, page: int = 1) -> List[Dict[str, str]]:
+        """Get all article URLs and titles from a page"""
         try:
-            # First make a request to the main page
-            url = urljoin(self.base_url, f'page/{page}' if page > 1 else '')
-            self.logger.info(f"Requesting: {url}")
+            # Navigate to the page
+            url = f"{self.base_url}/page/{page}" if page > 1 else self.base_url
+            self.logger.info(f"Navigating to: {url}")
             
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-                'Accept-Language': 'en-US,en;q=0.5',
-            }
+            # Use a new page for the list view
+            list_page = self.browser.new_page()
+            list_page.goto(url, wait_until='domcontentloaded')
+            list_page.wait_for_selector('main article', timeout=10000)
             
-            response = requests.get(url, headers=headers, timeout=30)
-            response.raise_for_status()
+            # Get all article cards
+            articles = []
+            article_cards = list_page.query_selector_all('main article')
             
-            # Parse the page with BeautifulSoup
-            soup = BeautifulSoup(response.text, 'lxml')
-            
-            # Find all article links
-            urls = []
-            for link in soup.find_all('a', href=True):
-                href = link['href']
-                full_url = self._clean_url(href)
-                
-                # Skip non-article URLs
-                if not full_url.startswith(self.base_url):
-                    continue
+            for card in article_cards:
+                try:
+                    # Get title link
+                    link = card.query_selector('h2 a, h3 a')
+                    if not link:
+                        continue
+                        
+                    href = link.get_attribute('href')
+                    title = link.text_content()
                     
-                parsed = urlparse(full_url)
-                path = parsed.path
-                
-                # Skip category pages and other non-article URLs
-                if path in ['/projects/', '/profiles/', '/viewpoints/', '/products/']:
+                    # Skip certain URLs
+                    if any(skip in href for skip in ['/jobs', '/issues/']):
+                        continue
+                    if href in ['/', '/projects/', '/profiles/', '/viewpoints/', '/products/']:
+                        continue
+                        
+                    articles.append({
+                        'url': href,
+                        'title': title.strip()
+                    })
+                except Exception as e:
+                    self.logger.error(f"Error processing article card: {str(e)}")
                     continue
-                if '/jobs' in path or '/issues/' in path:
-                    continue
-                if any(section in path for section in ['/projects/', '/profiles/', '/viewpoints/', '/products/']):
-                    urls.append(full_url)
             
-            return list(set(urls))
+            list_page.close()
+            return articles
 
         except Exception as e:
             self.logger.error(f"Error fetching article list: {str(e)}")
+            if 'list_page' in locals():
+                list_page.close()
             return []
 
-    def scrape_article(self, url: str) -> Optional[ScrapedArticle]:
-        """Scrape a single article using both requests and Playwright"""
+    def scrape_article(self, article_info: Dict[str, str]) -> Optional[ScrapedArticle]:
+        """Scrape a single article using Playwright"""
         try:
-            # First check if the URL is accessible with requests
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            }
-            response = requests.head(url, headers=headers, timeout=10)
-            response.raise_for_status()
+            url = article_info['url']
+            self.logger.info(f"Attempting to scrape article: {article_info['title']}")
             
-            # If accessible, use Playwright for detailed scraping
-            self.page.goto(url, wait_until='domcontentloaded', timeout=30000)
-            self.logger.info(f"Successfully navigated to: {url}")
-            
-            # Wait for main content
-            self.page.wait_for_selector('article', timeout=10000)
+            # Use a new page for each article
+            article_page = self.browser.new_page()
+            article_page.goto(url, wait_until='domcontentloaded', timeout=30000)
+            article_page.wait_for_selector('article', timeout=10000)
 
             # Get article content
-            article_element = self.page.query_selector('article')
+            article_element = article_page.query_selector('article')
             if not article_element:
                 raise ValueError("Could not find article content")
 
@@ -94,18 +81,14 @@ class MetropolisScraper(BaseScraper):
             structured_content = self.extract_structured_content(article_element)
             processed_content = self.process_content(structured_content)
 
-            # Extract meta information with robust error handling
-            try:
-                meta_info = self.extract_meta_info()
-            except Exception as e:
-                self.logger.warning(f"Error extracting meta info: {str(e)}")
-                meta_info = {
-                    'title': self.page.title() or 'Untitled',
-                    'meta_description': '',
-                    'author': 'Unknown',
-                    'published_at': datetime.now().isoformat(),
-                    'tags': []
-                }
+            # Extract meta information
+            meta_info = {
+                'title': article_info['title'],
+                'meta_description': article_page.query_selector('meta[name="description"]').get_attribute('content') if article_page.query_selector('meta[name="description"]') else '',
+                'author': article_page.query_selector('.author-name').text_content() if article_page.query_selector('.author-name') else 'Unknown',
+                'published_at': article_page.query_selector('time').get_attribute('datetime') if article_page.query_selector('time') else datetime.now().isoformat(),
+                'tags': [tag.text_content() for tag in article_page.query_selector_all('.tags a') if tag]
+            }
 
             # Get main image
             main_image = {
@@ -113,20 +96,25 @@ class MetropolisScraper(BaseScraper):
                 'alt': '',
                 'caption': ''
             }
-            try:
-                selectors = ['img.wp-post-image', '.post-thumbnail img', 'article img']
-                for selector in selectors:
-                    img_element = article_element.query_selector(selector)
-                    if img_element:
-                        main_image = {
-                            'url': self._clean_url(img_element.get_attribute('src') or ''),
-                            'alt': img_element.get_attribute('alt') or '',
-                            'caption': img_element.get_attribute('title') or ''
-                        }
-                        break
-            except Exception as e:
-                self.logger.warning(f"Error extracting main image: {str(e)}")
+            
+            img_selectors = [
+                'img.wp-post-image',
+                '.post-thumbnail img',
+                'article img'
+            ]
+            
+            for selector in img_selectors:
+                img = article_page.query_selector(selector)
+                if img:
+                    main_image = {
+                        'url': img.get_attribute('src') or '',
+                        'alt': img.get_attribute('alt') or '',
+                        'caption': img.get_attribute('title') or ''
+                    }
+                    break
 
+            article_page.close()
+            
             return ScrapedArticle(
                 url=url,
                 title=meta_info['title'],
@@ -143,6 +131,8 @@ class MetropolisScraper(BaseScraper):
 
         except Exception as e:
             self.logger.error(f"Error scraping article {url}: {str(e)}")
+            if 'article_page' in locals():
+                article_page.close()
             return None
 
     def scrape_category(self, max_pages: int = 5) -> List[Dict[str, Any]]:
@@ -151,32 +141,35 @@ class MetropolisScraper(BaseScraper):
         
         for page in range(1, max_pages + 1):
             try:
-                urls = self.get_article_urls(page)
-                self.logger.info(f"Found {len(urls)} articles on page {page}")
+                articles = self.get_article_urls(page)
+                self.logger.info(f"Found {len(articles)} articles on page {page}")
 
-                for url in urls:
+                for article in articles:
                     try:
                         # Check if article already exists and needs updating
                         existing = self.supabase.table('articles')\
                             .select('id, last_scraped_at')\
-                            .eq('url', url)\
+                            .eq('url', article['url'])\
                             .single()\
                             .execute()
 
                         if existing.data:
                             last_scraped = datetime.fromisoformat(existing.data['last_scraped_at'].replace('Z', '+00:00'))
                             if (datetime.now() - last_scraped).days < 7:
-                                self.logger.info(f"Skipping recently scraped article: {url}")
+                                self.logger.info(f"Skipping recently scraped article: {article['title']}")
                                 continue
 
-                        article = self.scrape_article(url)
-                        if article:
-                            result = self.save_article(article)
+                        scraped = self.scrape_article(article)
+                        if scraped:
+                            result = self.save_article(scraped)
                             results.append(result)
-                            self.logger.info(f"Successfully scraped and saved: {url}")
+                            self.logger.info(f"Successfully scraped and saved: {article['title']}")
+                            
+                            # Add a small delay between articles
+                            time.sleep(2)
 
                     except Exception as e:
-                        self.logger.error(f"Error processing article {url}: {str(e)}")
+                        self.logger.error(f"Error processing article {article['title']}: {str(e)}")
                         continue
 
             except Exception as e:

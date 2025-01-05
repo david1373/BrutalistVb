@@ -1,20 +1,11 @@
 import { chromium, Browser, Page } from 'playwright';
+import { extractStructuredContent, ExtractedContent } from './scrapeUtils';
 
 interface ScrapingOptions {
   maxRetries?: number;
   waitTime?: number;
   headless?: boolean;
-}
-
-interface ArticleData {
-  title: string;
-  content: string;
-  originalContent: string;  // Added for storing raw content
-  imageUrl: string;
-  author: string;
-  publishedAt: string;
-  tags: string[];
-  metaDescription?: string;  // Added for SEO content
+  timeout?: number;
 }
 
 export class PlaywrightScraper {
@@ -28,7 +19,8 @@ export class PlaywrightScraper {
     this.options = {
       maxRetries: options.maxRetries ?? 3,
       waitTime: options.waitTime ?? 1000,
-      headless: options.headless ?? true
+      headless: options.headless ?? true,
+      timeout: options.timeout ?? 30000
     };
   }
 
@@ -37,25 +29,34 @@ export class PlaywrightScraper {
       this.browser = await chromium.launch({
         headless: this.options.headless
       });
+      
       this.page = await this.browser.newPage();
-      
-      // Enhanced timeout for better reliability
-      await this.page.setDefaultTimeout(45000);
-      
-      // Add custom retry logic
-      this.page.on('crashedframe', async () => {
-        console.log('Frame crashed, retrying...');
-        await this.retry();
-      });
-
-      // Optimize resource loading
-      await this.page.route('**/*.{png,jpg,jpeg,gif,svg}', route => 
-        route.abort()
-      );
+      await this.setupPage(this.page);
     } catch (error) {
       console.error('Failed to initialize browser:', error);
       throw error;
     }
+  }
+
+  private async setupPage(page: Page) {
+    // Set timeout
+    await page.setDefaultTimeout(this.options.timeout);
+    
+    // Block unnecessary resources
+    await page.route('**/*.{png,jpg,jpeg,gif,svg,css,font,woff2}', route => 
+      route.abort()
+    );
+
+    // Handle page errors
+    page.on('pageerror', error => {
+      console.error('Page error:', error);
+    });
+
+    page.on('console', msg => {
+      if (msg.type() === 'error') {
+        console.error('Console error:', msg.text());
+      }
+    });
   }
 
   private async retry() {
@@ -63,95 +64,61 @@ export class PlaywrightScraper {
     
     await this.page.close();
     this.page = await this.browser.newPage();
+    await this.setupPage(this.page);
   }
 
-  private async extractContent(selector: string): Promise<{ processed: string; original: string }> {
+  async scrapeArticle(url: string): Promise<ExtractedContent> {
     if (!this.page) throw new Error('Browser not initialized');
 
-    return await this.page.evaluate((sel) => {
-      const element = document.querySelector(sel);
-      if (!element) return { processed: '', original: '' };
-
-      // Store original HTML content
-      const original = element.innerHTML;
-
-      // Clone node for processing
-      const processed = element.cloneNode(true) as HTMLElement;
-
-      // Remove unwanted elements
-      processed.querySelectorAll('script, style, iframe, .advertisement').forEach(el => el.remove());
-
-      // Extract text content while preserving some structure
-      const processedText = processed.innerText
-        .split('\n')
-        .map(line => line.trim())
-        .filter(line => line.length > 0)
-        .join('\n');
-
-      return {
-        processed: processedText,
-        original: original
-      };
-    }, selector);
-  }
-
-  async scrapeArticle(url: string): Promise<ArticleData> {
-    if (!this.page) throw new Error('Browser not initialized');
-
+    let lastError: Error | null = null;
     let retries = 0;
+
     while (retries < this.options.maxRetries) {
       try {
+        // Navigate with custom timeout
         await this.page.goto(url, { 
           waitUntil: 'networkidle',
-          timeout: 30000 
+          timeout: this.options.timeout
         });
         
-        // Wait for essential elements with longer timeout
+        // Wait for essential elements
         await Promise.all([
-          this.page.waitForSelector('h1.entry-title', { timeout: 30000 }),
-          this.page.waitForSelector('div.entry-content', { timeout: 30000 })
+          this.page.waitForSelector('h1.entry-title'),
+          this.page.waitForSelector('div.entry-content')
         ]);
+
+        // Extract content using enhanced utilities
+        const content = await extractStructuredContent(this.page);
         
-        // Extract content with both original and processed versions
-        const { processed: content, original: originalContent } = 
-          await this.extractContent('div.entry-content');
+        // Validate extracted content
+        if (!content.title || !content.originalContent) {
+          throw new Error('Failed to extract required content');
+        }
 
-        // Enhanced metadata extraction
-        const [title, imageUrl, author, publishedAt, metaDescription] = await Promise.all([
-          this.page.$eval('h1.entry-title', el => el.textContent?.trim() ?? ''),
-          this.page.$eval('div.entry-content img', img => img.getAttribute('src') ?? ''),
-          this.page.$eval('a[rel="author"]', el => el.textContent?.trim() ?? ''),
-          this.page.$eval('time', time => time.getAttribute('datetime') ?? ''),
-          this.page.$eval('meta[name="description"]', meta => meta.getAttribute('content') ?? '')
-        ]);
+        return content;
 
-        // Enhanced tag extraction with error handling
-        const tags = await this.page.$$eval('a[rel="tag"]', els => 
-          els.map(el => el.textContent?.trim() ?? '').filter(tag => tag.length > 0)
+      } catch (error) {
+        lastError = error as Error;
+        retries++;
+        
+        console.error(
+          `Failed to scrape article (attempt ${retries}/${this.options.maxRetries}):`,
+          error
         );
 
-        return {
-          title,
-          content,
-          originalContent,
-          imageUrl,
-          author,
-          publishedAt,
-          tags,
-          metaDescription
-        };
-      } catch (error) {
-        retries++;
-        console.error(`Failed to scrape article (attempt ${retries}):`, error);
-        await new Promise(resolve => setTimeout(resolve, this.options.waitTime * retries));
-        
-        if (retries === this.options.maxRetries) {
-          throw new Error(`Failed to scrape article after ${retries} attempts`);
+        if (retries < this.options.maxRetries) {
+          // Exponential backoff
+          const delay = this.options.waitTime * Math.pow(2, retries - 1);
+          await new Promise(resolve => setTimeout(resolve, delay));
+          await this.retry();
         }
       }
     }
 
-    throw new Error('Unexpected error in scraping loop');
+    throw new Error(
+      `Failed to scrape article after ${retries} attempts. ` +
+      `Last error: ${lastError?.message}`
+    );
   }
 
   async scrapeArticleList(pageNum: number = 1): Promise<string[]> {
@@ -161,19 +128,26 @@ export class PlaywrightScraper {
       const url = `${this.baseUrl}/architecture/page/${pageNum}`;
       await this.page.goto(url, { 
         waitUntil: 'networkidle',
-        timeout: 30000 
+        timeout: this.options.timeout
       });
       
-      // Enhanced selector for better accuracy
+      // Wait for article links with better selector
       await this.page.waitForSelector('article a[href*="/architecture/"]');
       
-      // Improved URL extraction with validation
-      return await this.page.$$eval('article a[href*="/architecture/"]', links => 
-        links
+      // Extract and validate URLs
+      const urls = await this.page.$$eval(
+        'article a[href*="/architecture/"]', 
+        links => links
           .map(link => link.href)
           .filter(href => href && href.includes('/architecture/'))
-          .filter((href, index, self) => self.indexOf(href) === index) // Remove duplicates
+          .filter((href, index, self) => self.indexOf(href) === index)
       );
+
+      if (!urls.length) {
+        console.warn('No article URLs found on page', pageNum);
+      }
+
+      return urls;
     } catch (error) {
       console.error('Failed to scrape article list:', error);
       throw error;

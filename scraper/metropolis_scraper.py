@@ -2,7 +2,6 @@ from typing import List, Dict, Any, Optional
 from datetime import datetime
 from scraper.base_scraper import BaseScraper, ScrapedArticle, ContentBlock
 import logging
-from urllib.parse import urljoin
 from playwright.sync_api import TimeoutError as PlaywrightTimeout
 import time
 
@@ -18,18 +17,17 @@ class MetropolisScraper(BaseScraper):
             url = f"{self.base_url}/page/{page}" if page > 1 else self.base_url
             self.logger.info(f"Navigating to: {url}")
             
-            # Use a new page for the list view
-            list_page = self.browser.new_page()
-            list_page.goto(url, wait_until='domcontentloaded')
-            list_page.wait_for_selector('main article', timeout=10000)
+            # Navigate and wait for content
+            self.page.goto(url)
+            self.page.wait_for_selector('main article')
             
             # Get all article cards
             articles = []
-            article_cards = list_page.query_selector_all('main article')
+            article_cards = self.page.query_selector_all('main article')
             
             for card in article_cards:
                 try:
-                    # Get title link
+                    # Get title and link
                     link = card.query_selector('h2 a, h3 a')
                     if not link:
                         continue
@@ -51,28 +49,24 @@ class MetropolisScraper(BaseScraper):
                     self.logger.error(f"Error processing article card: {str(e)}")
                     continue
             
-            list_page.close()
             return articles
 
         except Exception as e:
             self.logger.error(f"Error fetching article list: {str(e)}")
-            if 'list_page' in locals():
-                list_page.close()
             return []
 
     def scrape_article(self, article_info: Dict[str, str]) -> Optional[ScrapedArticle]:
-        """Scrape a single article using Playwright"""
+        """Scrape a single article"""
         try:
             url = article_info['url']
             self.logger.info(f"Attempting to scrape article: {article_info['title']}")
             
-            # Use a new page for each article
-            article_page = self.browser.new_page()
-            article_page.goto(url, wait_until='domcontentloaded', timeout=30000)
-            article_page.wait_for_selector('article', timeout=10000)
+            # Navigate to article
+            self.page.goto(url)
+            self.page.wait_for_selector('article')
 
             # Get article content
-            article_element = article_page.query_selector('article')
+            article_element = self.page.query_selector('article')
             if not article_element:
                 raise ValueError("Could not find article content")
 
@@ -84,11 +78,31 @@ class MetropolisScraper(BaseScraper):
             # Extract meta information
             meta_info = {
                 'title': article_info['title'],
-                'meta_description': article_page.query_selector('meta[name="description"]').get_attribute('content') if article_page.query_selector('meta[name="description"]') else '',
-                'author': article_page.query_selector('.author-name').text_content() if article_page.query_selector('.author-name') else 'Unknown',
-                'published_at': article_page.query_selector('time').get_attribute('datetime') if article_page.query_selector('time') else datetime.now().isoformat(),
-                'tags': [tag.text_content() for tag in article_page.query_selector_all('.tags a') if tag]
+                'meta_description': '',
+                'author': 'Unknown',
+                'published_at': datetime.now().isoformat(),
+                'tags': []
             }
+            
+            # Try to get meta description
+            meta_desc = self.page.query_selector('meta[name="description"]')
+            if meta_desc:
+                meta_info['meta_description'] = meta_desc.get_attribute('content') or ''
+            
+            # Try to get author
+            author = self.page.query_selector('.author-name')
+            if author:
+                meta_info['author'] = author.text_content()
+                
+            # Try to get date
+            time_elem = self.page.query_selector('time')
+            if time_elem:
+                meta_info['published_at'] = time_elem.get_attribute('datetime') or datetime.now().isoformat()
+                
+            # Try to get tags
+            tags = self.page.query_selector_all('.tags a')
+            if tags:
+                meta_info['tags'] = [tag.text_content() for tag in tags if tag]
 
             # Get main image
             main_image = {
@@ -104,7 +118,7 @@ class MetropolisScraper(BaseScraper):
             ]
             
             for selector in img_selectors:
-                img = article_page.query_selector(selector)
+                img = self.page.query_selector(selector)
                 if img:
                     main_image = {
                         'url': img.get_attribute('src') or '',
@@ -112,8 +126,6 @@ class MetropolisScraper(BaseScraper):
                         'caption': img.get_attribute('title') or ''
                     }
                     break
-
-            article_page.close()
             
             return ScrapedArticle(
                 url=url,
@@ -130,9 +142,7 @@ class MetropolisScraper(BaseScraper):
             )
 
         except Exception as e:
-            self.logger.error(f"Error scraping article {url}: {str(e)}")
-            if 'article_page' in locals():
-                article_page.close()
+            self.logger.error(f"Error scraping article {article_info['title']}: {str(e)}")
             return None
 
     def scrape_category(self, max_pages: int = 5) -> List[Dict[str, Any]]:

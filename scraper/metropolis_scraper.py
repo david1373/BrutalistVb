@@ -19,47 +19,70 @@ class MetropolisScraper(BaseScraper):
             
             # Navigate and wait for content
             self.page.goto(url)
-            self.page.wait_for_selector('main article')
+            self.page.wait_for_selector('main')
             
-            # Get all article cards
+            # First try to find links using modern layout selectors
+            selectors = [
+                'article a[href]',
+                '.article-card a[href]',
+                '.post-card a[href]',
+                'main a[href]'
+            ]
+            
             articles = []
-            article_cards = self.page.query_selector_all('main article')
+            for selector in selectors:
+                self.logger.info(f"Trying selector: {selector}")
+                links = self.page.query_selector_all(selector)
+                self.logger.info(f"Found {len(links)} links with selector {selector}")
+                
+                for link in links:
+                    try:
+                        href = link.get_attribute('href')
+                        if not href:
+                            continue
+                            
+                        # Skip certain URLs
+                        if any(skip in href for skip in ['/jobs', '/issues/']):
+                            continue
+                        if href in ['/', '/projects/', '/profiles/', '/viewpoints/', '/products/']:
+                            continue
+                            
+                        # Get title from link or nearest heading
+                        title = link.text_content().strip()
+                        if not title:
+                            heading = link.query_selector('h2, h3, h4') or link
+                            title = heading.text_content().strip()
+                            
+                        if href and title:
+                            articles.append({
+                                'url': href if href.startswith('http') else f"{self.base_url}{href}",
+                                'title': title
+                            })
+                    except Exception as e:
+                        self.logger.error(f"Error processing link: {str(e)}")
+                        continue
+                        
+                if articles:
+                    break
             
-            for card in article_cards:
-                try:
-                    # Get title and link
-                    link = card.query_selector('h2 a, h3 a')
-                    if not link:
-                        continue
-                        
-                    href = link.get_attribute('href')
-                    title = link.text_content()
-                    
-                    # Skip certain URLs
-                    if any(skip in href for skip in ['/jobs', '/issues/']):
-                        continue
-                    if href in ['/', '/projects/', '/profiles/', '/viewpoints/', '/products/']:
-                        continue
-                        
-                    articles.append({
-                        'url': href,
-                        'title': title.strip()
-                    })
-                except Exception as e:
-                    self.logger.error(f"Error processing article card: {str(e)}")
-                    continue
+            # Log all found URLs for debugging
+            self.logger.info("Found articles:")
+            for article in articles:
+                self.logger.info(f"- {article['title']}: {article['url']}")
             
             return articles
 
         except Exception as e:
             self.logger.error(f"Error fetching article list: {str(e)}")
+            import traceback
+            self.logger.error(traceback.format_exc())
             return []
 
     def scrape_article(self, article_info: Dict[str, str]) -> Optional[ScrapedArticle]:
         """Scrape a single article"""
         try:
             url = article_info['url']
-            self.logger.info(f"Attempting to scrape article: {article_info['title']}")
+            self.logger.info(f"Attempting to scrape article: {article_info['title']} at {url}")
             
             # Navigate to article
             self.page.goto(url)

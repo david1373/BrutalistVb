@@ -3,8 +3,7 @@ from datetime import datetime
 from scraper.base_scraper import BaseScraper, ScrapedArticle, ContentBlock
 import logging
 from playwright.sync_api import TimeoutError as PlaywrightTimeout
-import time
-from urllib.parse import urljoin, urlparse
+from bs4 import BeautifulSoup
 
 class MetropolisScraper(BaseScraper):
     def __init__(self, source_id: str):
@@ -14,106 +13,71 @@ class MetropolisScraper(BaseScraper):
     def get_article_urls(self, page: int = 1) -> List[Dict[str, str]]:
         """Get all article URLs and titles from a page"""
         try:
-            # Navigate to the page with projects
+            # Navigate to the projects page and get all content at once
             url = f"{self.base_url}page/{page}/" if page > 1 else self.base_url
             self.logger.info(f"Navigating to: {url}")
             
-            # Navigate and wait for content with less strict timing
-            self.page.goto(url, wait_until='domcontentloaded')
+            response = self.page.goto(url)
+            if not response.ok:
+                raise ValueError(f"Failed to load page: {response.status}")
+                
+            self.page.wait_for_selector('main')
+            content = self.page.content()
             
-            # Take a screenshot for debugging
-            time.sleep(5)  # Give more time for content to load
-            self.page.screenshot(path='page_before.png')
+            # Parse with BeautifulSoup
+            soup = BeautifulSoup(content, 'html.parser')
             
-            # Get all clickable links
-            self.logger.info("Looking for article links...")
-            links = self.page.query_selector_all('a[href]')
-            self.logger.info(f"Found {len(links)} total links")
-            
-            # Process links
+            # Find all article entries
             articles = []
             seen_urls = set()
             
-            for link in links:
+            # Look for article elements
+            for article in soup.find_all(['article']):
                 try:
-                    href = link.get_attribute('href')
-                    if not href:
+                    # Find title and link
+                    title_link = article.find(['h2', 'h3']).\
+                        find('a') if article.find(['h2', 'h3']) else None
+                        
+                    if not title_link:
                         continue
                         
-                    # Clean and normalize URL
-                    if not href.startswith('http'):
-                        href = urljoin(self.base_url, href.lstrip('/'))
-                        
-                    # Filter out non-article URLs
-                    if not href.startswith(self.base_url):
-                        continue
-                    if any(skip in href for skip in ['/jobs', '/issues/', '/category/', '/tag/']):
-                        continue
-                    if href.endswith(('/projects/', '/profiles/', '/viewpoints/', '/products/')):
-                        continue
-                        
-                    # Get title
-                    title = link.text_content().strip()
-                    if not title or title.lower() in ['learn more', 'read more']:
-                        continue
+                    href = title_link.get('href')
+                    title = title_link.get_text(strip=True)
                     
-                    # Log what we found
-                    self.logger.info(f"Found link: title='{title}', href='{href}'")
-                    
+                    if not href or not title:
+                        continue
+                        
                     if href not in seen_urls:
                         articles.append({
                             'url': href,
-                            'title': title
+                            'title': title,
+                            'html': str(article)  # Store the HTML for later
                         })
                         seen_urls.add(href)
                         
                 except Exception as e:
-                    self.logger.error(f"Error processing link: {str(e)}")
+                    self.logger.error(f"Error processing article element: {str(e)}")
                     continue
-            
-            # Take another screenshot after processing
-            self.page.screenshot(path='page_after.png')
-            
+                    
             self.logger.info(f"Found {len(articles)} unique articles")
-            for article in articles:
-                self.logger.info(f"Final article: {article['title']} at {article['url']}")
-                
             return articles
 
         except Exception as e:
             self.logger.error(f"Error fetching article list: {str(e)}")
-            import traceback
-            self.logger.error(traceback.format_exc())
             return []
 
     def scrape_article(self, article_info: Dict[str, str]) -> Optional[ScrapedArticle]:
-        """Scrape a single article"""
+        """Extract article content from stored HTML"""
         try:
-            url = article_info['url']
-            self.logger.info(f"Attempting to scrape article: {article_info['title']} at {url}")
+            self.logger.info(f"Processing article: {article_info['title']}")
             
-            # Navigate to article with less strict timing
-            response = self.page.goto(url, wait_until='domcontentloaded')
-            if not response.ok:
-                raise ValueError(f"Got status {response.status} when accessing article")
+            # Parse the stored HTML
+            soup = BeautifulSoup(article_info['html'], 'html.parser')
             
-            # Allow more time for content to load
-            time.sleep(5)
+            # Extract basic content
+            main_content = soup.get_text(strip=True)
             
-            # Get article content
-            article_element = self.page.query_selector('article') or self.page.query_selector('main')
-            if not article_element:
-                raise ValueError("Could not find article content")
-
-            # Get main content area
-            content_area = article_element.query_selector('.entry-content') or article_element
-
-            # Extract content
-            original_content = content_area.inner_html()
-            structured_content = self.extract_structured_content(content_area)
-            processed_content = self.process_content(structured_content)
-
-            # Extract meta information
+            # Extract any available metadata
             meta_info = {
                 'title': article_info['title'],
                 'meta_description': '',
@@ -122,60 +86,49 @@ class MetropolisScraper(BaseScraper):
                 'tags': []
             }
             
-            # Try to get meta description
-            meta_desc = self.page.query_selector('meta[name="description"]')
-            if meta_desc:
-                meta_info['meta_description'] = meta_desc.get_attribute('content') or ''
+            # Try to extract author if available
+            author_elem = soup.find(class_=['author', 'byline'])
+            if author_elem:
+                meta_info['author'] = author_elem.get_text(strip=True)
             
-            # Try to get author
-            author = self.page.query_selector('.author-name, .author, .byline')
-            if author:
-                meta_info['author'] = author.text_content().strip()
-                
-            # Try to get date
-            time_elem = self.page.query_selector('time')
-            if time_elem:
-                meta_info['published_at'] = time_elem.get_attribute('datetime') or datetime.now().isoformat()
-                
-            # Try to get tags
-            tags = self.page.query_selector_all('.tags a, .category a, .categories a')
-            if tags:
-                meta_info['tags'] = [tag.text_content().strip() for tag in tags if tag]
-
-            # Get main image
+            # Create structured content
+            structured_content = []
+            
+            # Add title block
+            structured_content.append(ContentBlock(
+                type='header',
+                content=article_info['title'],
+                metadata={'level': 1}
+            ))
+            
+            # Add main content block
+            structured_content.append(ContentBlock(
+                type='text',
+                content=main_content
+            ))
+            
+            # Extract main image if available
             main_image = {
                 'url': '',
                 'alt': '',
                 'caption': ''
             }
             
-            img_selectors = [
-                '.featured-image img',
-                '.entry-content img',
-                '.post-thumbnail img',
-                'article img',
-                'main img'
-            ]
-            
-            for selector in img_selectors:
-                img = self.page.query_selector(selector)
-                if img:
-                    src = img.get_attribute('src')
-                    if src:
-                        main_image = {
-                            'url': urljoin(self.base_url, src.lstrip('/')),
-                            'alt': img.get_attribute('alt') or '',
-                            'caption': img.get_attribute('title') or ''
-                        }
-                        break
+            img = soup.find('img')
+            if img:
+                main_image = {
+                    'url': img.get('src', ''),
+                    'alt': img.get('alt', ''),
+                    'caption': img.get('title', '')
+                }
             
             # Create article object
-            article = ScrapedArticle(
-                url=url,
+            return ScrapedArticle(
+                url=article_info['url'],
                 title=meta_info['title'],
                 meta_description=meta_info['meta_description'],
-                original_content=original_content,
-                processed_content=processed_content,
+                original_content=article_info['html'],
+                processed_content=main_content,
                 structured_content=structured_content,
                 main_image=main_image,
                 author=meta_info['author'],
@@ -183,12 +136,9 @@ class MetropolisScraper(BaseScraper):
                 tags=meta_info['tags'],
                 source_id=self.source_id
             )
-            
-            self.logger.info(f"Successfully scraped article: {article.title}")
-            return article
 
         except Exception as e:
-            self.logger.error(f"Error scraping article {article_info['title']}: {str(e)}")
+            self.logger.error(f"Error processing article {article_info['title']}: {str(e)}")
             return None
 
     def scrape_category(self, max_pages: int = 5) -> List[Dict[str, Any]]:
@@ -220,9 +170,6 @@ class MetropolisScraper(BaseScraper):
                             result = self.save_article(scraped)
                             results.append(result)
                             self.logger.info(f"Successfully scraped and saved: {article['title']}")
-                            
-                            # Add a small delay between articles
-                            time.sleep(2)
 
                     except Exception as e:
                         self.logger.error(f"Error processing article {article['title']}: {str(e)}")

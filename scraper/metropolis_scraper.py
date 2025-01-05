@@ -4,11 +4,24 @@ from scraper.base_scraper import BaseScraper, ScrapedArticle, ContentBlock
 import logging
 from playwright.sync_api import TimeoutError as PlaywrightTimeout
 import time
+from urllib.parse import urljoin, urlparse
 
 class MetropolisScraper(BaseScraper):
     def __init__(self, source_id: str):
         super().__init__('https://metropolismag.com', source_id)
         self.logger = logging.getLogger(__name__)
+
+    def _clean_url(self, url: str) -> str:
+        """Normalize URL format"""
+        if not url:
+            return ''
+            
+        # Handle relative URLs
+        if not url.startswith(('http://', 'https://')):
+            return urljoin(self.base_url, url.lstrip('/'))
+            
+        # Already absolute URL
+        return url
 
     def get_article_urls(self, page: int = 1) -> List[Dict[str, str]]:
         """Get all article URLs and titles from a page"""
@@ -21,56 +34,73 @@ class MetropolisScraper(BaseScraper):
             self.page.goto(url)
             self.page.wait_for_selector('main')
             
-            # First try to find links using modern layout selectors
-            selectors = [
-                'article a[href]',
-                '.article-card a[href]',
-                '.post-card a[href]',
-                'main a[href]'
-            ]
-            
+            # Find all article links
             articles = []
-            for selector in selectors:
-                self.logger.info(f"Trying selector: {selector}")
-                links = self.page.query_selector_all(selector)
-                self.logger.info(f"Found {len(links)} links with selector {selector}")
-                
-                for link in links:
-                    try:
-                        href = link.get_attribute('href')
-                        if not href:
-                            continue
-                            
-                        # Skip certain URLs
-                        if any(skip in href for skip in ['/jobs', '/issues/']):
-                            continue
-                        if href in ['/', '/projects/', '/profiles/', '/viewpoints/', '/products/']:
-                            continue
-                            
-                        # Get title from link or nearest heading
-                        title = link.text_content().strip()
-                        if not title:
-                            heading = link.query_selector('h2, h3, h4') or link
-                            title = heading.text_content().strip()
-                            
-                        if href and title:
-                            articles.append({
-                                'url': href if href.startswith('http') else f"{self.base_url}{href}",
-                                'title': title
-                            })
-                    except Exception as e:
-                        self.logger.error(f"Error processing link: {str(e)}")
+            links = self.page.query_selector_all('main article a[href]')
+            
+            seen_urls = set()
+            for link in links:
+                try:
+                    href = link.get_attribute('href')
+                    if not href:
                         continue
                         
-                if articles:
-                    break
+                    # Clean and normalize URL
+                    cleaned_url = self._clean_url(href)
+                    if not cleaned_url or cleaned_url in seen_urls:
+                        continue
+                        
+                    # Parse URL to check path
+                    parsed = urlparse(cleaned_url)
+                    if not parsed.path:
+                        continue
+                        
+                    # Skip certain URLs
+                    if any(skip in parsed.path for skip in ['/jobs', '/issues/']):
+                        continue
+                    if parsed.path in ['/', '/projects/', '/profiles/', '/viewpoints/', '/products/']:
+                        continue
+                    if not any(section in parsed.path for section in ['/projects/', '/profiles/', '/viewpoints/', '/products/']):
+                        continue
+                        
+                    # Get title
+                    title = None
+                    # Try to get title from article card heading
+                    article = link.evaluate('node => node.closest("article")')
+                    if article:
+                        heading = article.query_selector('h2, h3')
+                        if heading:
+                            title = heading.text_content().strip()
+                            
+                    # If no title found, try link text
+                    if not title:
+                        title = link.text_content().strip()
+                        
+                    # If we have both URL and title, add to results
+                    if title and not title.lower() in ['learn more', 'read more']:
+                        articles.append({
+                            'url': cleaned_url,
+                            'title': title
+                        })
+                        seen_urls.add(cleaned_url)
+                        
+                except Exception as e:
+                    self.logger.error(f"Error processing link: {str(e)}")
+                    continue
             
-            # Log all found URLs for debugging
-            self.logger.info("Found articles:")
+            # Remove duplicates while preserving order
+            unique_articles = []
+            seen = set()
             for article in articles:
-                self.logger.info(f"- {article['title']}: {article['url']}")
+                if article['url'] not in seen:
+                    unique_articles.append(article)
+                    seen.add(article['url'])
             
-            return articles
+            self.logger.info(f"Found {len(unique_articles)} unique articles")
+            for article in unique_articles:
+                self.logger.info(f"Found article: {article['title']} at {article['url']}")
+                
+            return unique_articles
 
         except Exception as e:
             self.logger.error(f"Error fetching article list: {str(e)}")
@@ -84,8 +114,29 @@ class MetropolisScraper(BaseScraper):
             url = article_info['url']
             self.logger.info(f"Attempting to scrape article: {article_info['title']} at {url}")
             
-            # Navigate to article
-            self.page.goto(url)
+            # Try with different URL formats
+            urls_to_try = [
+                url,  # Original URL
+                url.replace('http://', 'https://'),  # Force HTTPS
+                self._clean_url(urlparse(url).path),  # Relative path with base
+            ]
+            
+            success = False
+            for try_url in urls_to_try:
+                try:
+                    self.logger.info(f"Trying URL: {try_url}")
+                    response = self.page.goto(try_url, wait_until='domcontentloaded')
+                    if response and response.ok:
+                        success = True
+                        break
+                except Exception as e:
+                    self.logger.warning(f"Failed with URL {try_url}: {str(e)}")
+                    continue
+                    
+            if not success:
+                raise ValueError("Could not access article with any URL variant")
+
+            # Wait for content
             self.page.wait_for_selector('article')
 
             # Get article content
@@ -144,7 +195,7 @@ class MetropolisScraper(BaseScraper):
                 img = self.page.query_selector(selector)
                 if img:
                     main_image = {
-                        'url': img.get_attribute('src') or '',
+                        'url': self._clean_url(img.get_attribute('src') or ''),
                         'alt': img.get_attribute('alt') or '',
                         'caption': img.get_attribute('title') or ''
                     }

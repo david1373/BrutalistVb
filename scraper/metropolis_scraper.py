@@ -4,6 +4,7 @@ from scraper.base_scraper import BaseScraper, ScrapedArticle, ContentBlock
 import logging
 from playwright.sync_api import TimeoutError as PlaywrightTimeout
 from bs4 import BeautifulSoup
+import time
 
 class MetropolisScraper(BaseScraper):
     def __init__(self, source_id: str):
@@ -13,57 +14,125 @@ class MetropolisScraper(BaseScraper):
     def get_article_urls(self, page: int = 1) -> List[Dict[str, str]]:
         """Get all article URLs and titles from a page"""
         try:
-            # Navigate to the projects page and get all content at once
+            # Navigate to the projects page
             url = f"{self.base_url}page/{page}/" if page > 1 else self.base_url
             self.logger.info(f"Navigating to: {url}")
             
+            # Navigate and wait for content
             response = self.page.goto(url)
             if not response.ok:
                 raise ValueError(f"Failed to load page: {response.status}")
                 
-            self.page.wait_for_selector('main')
+            # Give page time to load dynamic content
+            time.sleep(5)
+            
+            # Save a screenshot for debugging
+            self.page.screenshot(path='page_debug.png')
+            
+            # Get all content
             content = self.page.content()
+            self.logger.info("Got page content, length: %d", len(content))
+            
+            # Save HTML for debugging
+            with open('page_debug.html', 'w', encoding='utf-8') as f:
+                f.write(content)
             
             # Parse with BeautifulSoup
             soup = BeautifulSoup(content, 'html.parser')
             
-            # Find all article entries
+            # Log the overall structure
+            self.logger.info("Page structure:")
+            for tag in soup.find_all(['header', 'main', 'article', 'div'], class_=True):
+                self.logger.info(f"Found element: <{tag.name} class='{tag.get('class', [])}'>")
+            
+            # Find all article links using different approaches
             articles = []
             seen_urls = set()
             
-            # Look for article elements
-            for article in soup.find_all(['article']):
+            # First try to find posts directly
+            post_elements = soup.find_all(['article', 'div'], class_=['post', 'article', 'entry'])
+            self.logger.info(f"Found {len(post_elements)} post elements")
+            
+            for post in post_elements:
                 try:
-                    # Find title and link
-                    title_link = article.find(['h2', 'h3']).\
-                        find('a') if article.find(['h2', 'h3']) else None
-                        
-                    if not title_link:
+                    # Try multiple ways to find the title and link
+                    title_elem = post.find(['h1', 'h2', 'h3', 'h4'], recursive=True)
+                    if not title_elem:
                         continue
                         
-                    href = title_link.get('href')
-                    title = title_link.get_text(strip=True)
+                    link = title_elem.find('a') if title_elem else None
+                    if not link:
+                        continue
+                        
+                    href = link.get('href')
+                    title = link.get_text(strip=True)
                     
                     if not href or not title:
                         continue
                         
+                    self.logger.info(f"Found article: {title} at {href}")
+                    
                     if href not in seen_urls:
                         articles.append({
                             'url': href,
                             'title': title,
-                            'html': str(article)  # Store the HTML for later
+                            'html': str(post)
                         })
                         seen_urls.add(href)
                         
                 except Exception as e:
-                    self.logger.error(f"Error processing article element: {str(e)}")
+                    self.logger.error(f"Error processing post element: {str(e)}")
                     continue
-                    
+            
+            # If we didn't find articles, try a broader search
+            if not articles:
+                self.logger.info("No articles found with first method, trying broader search")
+                links = soup.find_all('a', href=True)
+                self.logger.info(f"Found {len(links)} total links")
+                
+                for link in links:
+                    try:
+                        href = link.get('href')
+                        if not href or href in seen_urls:
+                            continue
+                            
+                        # Only process links that look like articles
+                        if not any(section in href for section in ['/projects/', '/profiles/', '/viewpoints/', '/products/']):
+                            continue
+                        if href.endswith(('/projects/', '/profiles/', '/viewpoints/', '/products/')):
+                            continue
+                            
+                        title = link.get_text(strip=True)
+                        if not title or title.lower() in ['learn more', 'read more']:
+                            continue
+                            
+                        self.logger.info(f"Found link: {title} at {href}")
+                        
+                        # Get the parent article/div if possible
+                        parent = link.find_parent(['article', 'div'], class_=['post', 'article', 'entry'])
+                        html = str(parent) if parent else str(link)
+                        
+                        articles.append({
+                            'url': href,
+                            'title': title,
+                            'html': html
+                        })
+                        seen_urls.add(href)
+                        
+                    except Exception as e:
+                        self.logger.error(f"Error processing link: {str(e)}")
+                        continue
+            
             self.logger.info(f"Found {len(articles)} unique articles")
+            for article in articles:
+                self.logger.info(f"Final article: {article['title']} at {article['url']}")
+                
             return articles
 
         except Exception as e:
             self.logger.error(f"Error fetching article list: {str(e)}")
+            import traceback
+            self.logger.error(traceback.format_exc())
             return []
 
     def scrape_article(self, article_info: Dict[str, str]) -> Optional[ScrapedArticle]:

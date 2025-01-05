@@ -36,6 +36,7 @@ class BaseScraper:
         self.source_id = source_id
         self.browser: Optional[Browser] = None
         self.page: Optional[Page] = None
+        self.playwright = None
         self.supabase: Client = create_client(
             os.getenv('SUPABASE_URL'),
             os.getenv('SUPABASE_KEY')
@@ -51,12 +52,24 @@ class BaseScraper:
 
     def start(self):
         """Initialize the browser and configure settings"""
-        playwright = sync_playwright().start()
-        self.browser = playwright.chromium.launch(headless=True)
-        self.page = self.browser.new_page()
+        self.playwright = sync_playwright().start()
+        browser_args = [
+            '--disable-gpu',
+            '--disable-dev-shm-usage',
+            '--disable-setuid-sandbox',
+            '--no-sandbox',
+            '--single-process',
+        ]
+        self.browser = self.playwright.chromium.launch(
+            headless=True,
+            args=browser_args
+        )
+        self.page = self.browser.new_page(user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 
         # Configure page
+        self.page.set_viewport_size({"width": 1920, "height": 1080})
         self.page.set_default_timeout(30000)
+        self.page.set_default_navigation_timeout(30000)
         self._setup_request_interception()
 
     def _setup_request_interception(self):
@@ -130,10 +143,10 @@ class BaseScraper:
         """Extract meta information from the page"""
         return {
             'title': self.page.title(),
-            'meta_description': self.page.locator('meta[name="description"]').get_attribute('content') or '',
-            'author': self.page.locator('a[rel="author"]').text_content() or 'Unknown',
-            'published_at': self.page.locator('time').get_attribute('datetime') or datetime.now().isoformat(),
-            'tags': [tag.text_content() for tag in self.page.query_selector_all('a[rel="tag"]')]
+            'meta_description': self.page.query_selector('meta[name="description"]').get_attribute('content') if self.page.query_selector('meta[name="description"]') else '',
+            'author': self.page.query_selector('a[rel="author"]').text_content() if self.page.query_selector('a[rel="author"]') else 'Unknown',
+            'published_at': self.page.query_selector('time').get_attribute('datetime') if self.page.query_selector('time') else datetime.now().isoformat(),
+            'tags': [tag.text_content() for tag in self.page.query_selector_all('a[rel="tag"]') if tag]
         }
 
     def save_article(self, article: ScrapedArticle) -> Dict[str, Any]:
@@ -166,3 +179,5 @@ class BaseScraper:
             self.page.close()
         if self.browser:
             self.browser.close()
+        if self.playwright:
+            self.playwright.stop()

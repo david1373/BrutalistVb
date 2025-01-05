@@ -18,72 +18,67 @@ class MetropolisScraper(BaseScraper):
             url = f"{self.base_url}page/{page}/" if page > 1 else self.base_url
             self.logger.info(f"Navigating to: {url}")
             
-            # Navigate and wait for content
-            self.page.goto(url)
-            self.page.wait_for_selector('.page-content')
+            # Navigate and wait for content with less strict timing
+            self.page.goto(url, wait_until='domcontentloaded')
             
             # Take a screenshot for debugging
-            self.page.screenshot(path='page.png')
+            time.sleep(5)  # Give more time for content to load
+            self.page.screenshot(path='page_before.png')
             
-            time.sleep(2)  # Allow dynamic content to load
+            # Get all clickable links
+            self.logger.info("Looking for article links...")
+            links = self.page.query_selector_all('a[href]')
+            self.logger.info(f"Found {len(links)} total links")
             
-            # Get all article containers
+            # Process links
             articles = []
-            article_entries = self.page.query_selector_all('.page-content article')
+            seen_urls = set()
             
-            self.logger.info(f"Found {len(article_entries)} article entries")
-            
-            for entry in article_entries:
+            for link in links:
                 try:
-                    # Get title and links
-                    title_links = entry.query_selector_all('a[href]')
-                    for link in title_links:
-                        href = link.get_attribute('href')
-                        if not href:
-                            continue
-                            
-                        # Skip links that don't look like articles
-                        if any(skip in href for skip in ['/jobs', '/issues/', 'category']):
-                            continue
+                    href = link.get_attribute('href')
+                    if not href:
+                        continue
                         
-                        # Try to get title from link or nearest heading
-                        title = link.text_content().strip()
-                        if not title:
-                            heading = entry.query_selector('h1, h2, h3, h4')
-                            if heading:
-                                title = heading.text_content().strip()
+                    # Clean and normalize URL
+                    if not href.startswith('http'):
+                        href = urljoin(self.base_url, href.lstrip('/'))
                         
-                        if not title or title.lower() in ['learn more', 'read more']:
-                            continue
+                    # Filter out non-article URLs
+                    if not href.startswith(self.base_url):
+                        continue
+                    if any(skip in href for skip in ['/jobs', '/issues/', '/category/', '/tag/']):
+                        continue
+                    if href.endswith(('/projects/', '/profiles/', '/viewpoints/', '/products/')):
+                        continue
                         
-                        # Build full URL if needed
-                        if not href.startswith('http'):
-                            href = urljoin(self.base_url, href.lstrip('/'))
-                        
-                        self.logger.info(f"Found article: {title} at {href}")
+                    # Get title
+                    title = link.text_content().strip()
+                    if not title or title.lower() in ['learn more', 'read more']:
+                        continue
+                    
+                    # Log what we found
+                    self.logger.info(f"Found link: title='{title}', href='{href}'")
+                    
+                    if href not in seen_urls:
                         articles.append({
                             'url': href,
                             'title': title
                         })
-                        break  # Take only first valid link per article
+                        seen_urls.add(href)
                         
                 except Exception as e:
-                    self.logger.error(f"Error processing article entry: {str(e)}")
+                    self.logger.error(f"Error processing link: {str(e)}")
                     continue
             
-            # Remove duplicates while preserving order
-            unique_articles = []
-            seen = set()
-            for article in articles:
-                if article['url'] not in seen:
-                    unique_articles.append(article)
-                    seen.add(article['url'])
+            # Take another screenshot after processing
+            self.page.screenshot(path='page_after.png')
             
-            self.logger.info(f"Found {len(unique_articles)} unique articles")
-            for article in unique_articles:
+            self.logger.info(f"Found {len(articles)} unique articles")
+            for article in articles:
                 self.logger.info(f"Final article: {article['title']} at {article['url']}")
                 
-            return unique_articles
+            return articles
 
         except Exception as e:
             self.logger.error(f"Error fetching article list: {str(e)}")
@@ -97,26 +92,21 @@ class MetropolisScraper(BaseScraper):
             url = article_info['url']
             self.logger.info(f"Attempting to scrape article: {article_info['title']} at {url}")
             
-            # Navigate to article
+            # Navigate to article with less strict timing
             response = self.page.goto(url, wait_until='domcontentloaded')
             if not response.ok:
                 raise ValueError(f"Got status {response.status} when accessing article")
             
-            # Allow content to load
-            time.sleep(2)
+            # Allow more time for content to load
+            time.sleep(5)
             
-            # Wait for content
-            self.page.wait_for_selector('article', timeout=10000)
-
             # Get article content
-            article_element = self.page.query_selector('article')
+            article_element = self.page.query_selector('article') or self.page.query_selector('main')
             if not article_element:
                 raise ValueError("Could not find article content")
 
             # Get main content area
-            content_area = article_element.query_selector('.entry-content')
-            if not content_area:
-                content_area = article_element  # Fallback to full article if no specific content area
+            content_area = article_element.query_selector('.entry-content') or article_element
 
             # Extract content
             original_content = content_area.inner_html()
@@ -138,7 +128,7 @@ class MetropolisScraper(BaseScraper):
                 meta_info['meta_description'] = meta_desc.get_attribute('content') or ''
             
             # Try to get author
-            author = self.page.query_selector('.author-name, .author')
+            author = self.page.query_selector('.author-name, .author, .byline')
             if author:
                 meta_info['author'] = author.text_content().strip()
                 
@@ -148,7 +138,7 @@ class MetropolisScraper(BaseScraper):
                 meta_info['published_at'] = time_elem.get_attribute('datetime') or datetime.now().isoformat()
                 
             # Try to get tags
-            tags = self.page.query_selector_all('.tags a, .category a')
+            tags = self.page.query_selector_all('.tags a, .category a, .categories a')
             if tags:
                 meta_info['tags'] = [tag.text_content().strip() for tag in tags if tag]
 
@@ -162,7 +152,9 @@ class MetropolisScraper(BaseScraper):
             img_selectors = [
                 '.featured-image img',
                 '.entry-content img',
-                'article img'
+                '.post-thumbnail img',
+                'article img',
+                'main img'
             ]
             
             for selector in img_selectors:

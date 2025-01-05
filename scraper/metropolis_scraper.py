@@ -20,37 +20,52 @@ class MetropolisScraper(BaseScraper):
             
             # Navigate and wait for content
             self.page.goto(url)
-            self.page.wait_for_selector('.post-feed')
+            self.page.wait_for_selector('.page-content')
+            
+            # Take a screenshot for debugging
+            self.page.screenshot(path='page.png')
+            
             time.sleep(2)  # Allow dynamic content to load
             
-            # Get all article entries
+            # Get all article containers
             articles = []
-            article_entries = self.page.query_selector_all('.post-feed article')
+            article_entries = self.page.query_selector_all('.page-content article')
             
             self.logger.info(f"Found {len(article_entries)} article entries")
             
             for entry in article_entries:
                 try:
-                    # Get title and link
-                    title_link = entry.query_selector('.entry-title a')
-                    if not title_link:
-                        continue
+                    # Get title and links
+                    title_links = entry.query_selector_all('a[href]')
+                    for link in title_links:
+                        href = link.get_attribute('href')
+                        if not href:
+                            continue
+                            
+                        # Skip links that don't look like articles
+                        if any(skip in href for skip in ['/jobs', '/issues/', 'category']):
+                            continue
                         
-                    href = title_link.get_attribute('href')
-                    title = title_link.text_content().strip()
-                    
-                    if not href or not title:
-                        continue
+                        # Try to get title from link or nearest heading
+                        title = link.text_content().strip()
+                        if not title:
+                            heading = entry.query_selector('h1, h2, h3, h4')
+                            if heading:
+                                title = heading.text_content().strip()
                         
-                    # Build full URL if needed
-                    if not href.startswith('http'):
-                        href = urljoin(self.base_url, href.lstrip('/'))
-                    
-                    self.logger.info(f"Found article: {title} at {href}")
-                    articles.append({
-                        'url': href,
-                        'title': title
-                    })
+                        if not title or title.lower() in ['learn more', 'read more']:
+                            continue
+                        
+                        # Build full URL if needed
+                        if not href.startswith('http'):
+                            href = urljoin(self.base_url, href.lstrip('/'))
+                        
+                        self.logger.info(f"Found article: {title} at {href}")
+                        articles.append({
+                            'url': href,
+                            'title': title
+                        })
+                        break  # Take only first valid link per article
                         
                 except Exception as e:
                     self.logger.error(f"Error processing article entry: {str(e)}")
@@ -145,7 +160,7 @@ class MetropolisScraper(BaseScraper):
             }
             
             img_selectors = [
-                '.post-thumbnail img',
+                '.featured-image img',
                 '.entry-content img',
                 'article img'
             ]

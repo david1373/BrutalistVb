@@ -10,21 +10,27 @@ class MetropolisScraper(BaseScraper):
         self.logger = logging.getLogger(__name__)
 
     def get_article_urls(self, page: int = 1) -> List[str]:
-        """Get all article URLs from a category page"""
+        """Get all article URLs from a page"""
         try:
             # Metropolis uses /page/{page} structure for pagination
             url = f"{self.base_url}/page/{page}" if page > 1 else self.base_url
-            self.page.goto(url, wait_until='networkidle')
+            self.page.goto(url, wait_until='domcontentloaded')
             
-            # Wait for article links - we'll need to adjust these selectors
-            self.page.wait_for_selector('article a')
-            
-            # Extract URLs - we'll refine these selectors based on the site's structure
-            links = self.page.query_selector_all('article a')
+            # Find all article links
+            links = self.page.query_selector_all('a[href*="metropolismag.com"]')
             urls = [link.get_attribute('href') for link in links]
             
-            # Filter and deduplicate
-            return list(set([url for url in urls if url and url.startswith(self.base_url)]))
+            # Filter for actual articles and deduplicate
+            filtered_urls = []
+            for url in urls:
+                if not url:
+                    continue
+                if '/jobs' in url or '/issues/' in url:
+                    continue
+                if any(section in url for section in ['/projects/', '/profiles/', '/viewpoints/', '/products/']):
+                    filtered_urls.append(url)
+            
+            return list(set(filtered_urls))
 
         except PlaywrightTimeout:
             self.logger.error(f"Timeout while fetching article list from page {page}")
@@ -36,9 +42,11 @@ class MetropolisScraper(BaseScraper):
     def scrape_article(self, url: str) -> Optional[ScrapedArticle]:
         """Scrape a single article"""
         try:
-            self.page.goto(url, wait_until='networkidle')
-            
-            # We'll need to adjust these selectors based on Metropolis's HTML structure
+            # Use page.goto with shorter timeout and less strict waiting
+            self.page.goto(url, wait_until='domcontentloaded', timeout=30000)
+            self.page.wait_for_selector('article', timeout=10000)
+
+            # Get article content
             article_element = self.page.query_selector('article')
             if not article_element:
                 raise ValueError("Could not find article content")
@@ -48,24 +56,38 @@ class MetropolisScraper(BaseScraper):
             structured_content = self.extract_structured_content(article_element)
             processed_content = self.process_content(structured_content)
 
-            # Extract meta information
-            meta_info = self.extract_meta_info()
+            # Extract meta information with robust error handling
+            try:
+                meta_info = self.extract_meta_info()
+            except Exception as e:
+                self.logger.warning(f"Error extracting meta info: {str(e)}")
+                meta_info = {
+                    'title': self.page.title() or 'Untitled',
+                    'meta_description': '',
+                    'author': 'Unknown',
+                    'published_at': datetime.now().isoformat(),
+                    'tags': []
+                }
 
-            # Get main image - adjust selector as needed
+            # Get main image with error handling
             main_image = {
                 'url': '',
                 'alt': '',
                 'caption': ''
             }
-            img_element = article_element.query_selector('img')
-            if img_element:
-                main_image = {
-                    'url': img_element.get_attribute('src') or '',
-                    'alt': img_element.get_attribute('alt') or '',
-                    'caption': img_element.get_attribute('title') or ''
-                }
+            try:
+                img_element = article_element.query_selector('img.wp-post-image') or \
+                            article_element.query_selector('.post-thumbnail img') or \
+                            article_element.query_selector('article img')
+                if img_element:
+                    main_image = {
+                        'url': img_element.get_attribute('src') or '',
+                        'alt': img_element.get_attribute('alt') or '',
+                        'caption': img_element.get_attribute('title') or ''
+                    }
+            except Exception as e:
+                self.logger.warning(f"Error extracting main image: {str(e)}")
 
-            # Create article object
             return ScrapedArticle(
                 url=url,
                 title=meta_info['title'],

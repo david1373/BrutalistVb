@@ -2,7 +2,7 @@ import { config } from 'dotenv';
 import path from 'path';
 
 // Load test environment variables
-config({ path: path.resolve(__dirname, '../.env.test') });
+config({ path: path.resolve(__dirname, '../.env') });
 
 // Global test timeout
 jest.setTimeout(30000); // 30 seconds
